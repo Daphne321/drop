@@ -28,7 +28,8 @@
 ## 技术 / 怎么跑 / 怎么验证
 
 - 纯前端单文件，Three.js（CDN）+ WebAudio 合成。
-- **跑**：项目根 `python3 -m http.server 8137` → `http://localhost:8137/`（需 http，**不能双击 file://**，ES module + CDN 会被拦）。
+- **线上可玩 / 分享给队友**：https://starsky618.github.io/drop/（GitHub Pages，零安装，Windows/手机都行）。
+- **本地跑**：项目根 `python3 -m http.server 8137` → `http://localhost:8137/`（需 http，**不能双击 file://**，ES module + CDN 会被拦）。队友用 VS Code + Live Server（README 有图文步骤）。
 - **验证**：可用 CDP（web-access skill）连本地 Chrome 自己截图验证。`index.html` 内置 `window.__dbg(cmd)` / `window.__g()` 调试钩子（开发期用，正式交付前删）。**注意**：后台标签页 rAF 被浏览器节流，依赖时间推进的动态逻辑（倒计时/近点判定）在后台跑不动，要么前台、要么用 `__dbg` 钩子手动触发 + 强制渲染。
 
 ## 文档地图
