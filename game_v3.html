@@ -14,6 +14,13 @@
 <div id="hud">连续空间 · 从卧室往东走 → 楼梯下楼 → 一楼单元门(绿)</div>
 <div id="info"></div>
 <div id="win">你 逃 出 来 了</div>
+<div id="obj" style="position:fixed;left:50%;top:7%;transform:translateX(-50%);color:#ffdf5a;font-size:19px;font-weight:700;text-shadow:0 0 14px #000;opacity:0;transition:opacity .3s;z-index:12;text-align:center;max-width:84%"></div>
+<div id="wake" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e8e2d6;font-size:26px;letter-spacing:4px;text-shadow:0 2px 12px #000;opacity:0;transition:opacity 1.2s;z-index:13;white-space:pre-line;text-align:center;pointer-events:none"></div>
+<div id="death" style="position:fixed;inset:0;background:rgba(8,4,4,.94);z-index:25;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px">
+  <div style="color:#b71a0e;font-size:66px;font-weight:900;letter-spacing:12px;text-shadow:0 0 40px rgba(183,26,14,.6)">你 死 了</div>
+  <div id="dreason" style="color:#fff;font-size:20px;max-width:62%;text-align:center;line-height:1.55"></div>
+  <button id="dretry" style="background:linear-gradient(180deg,#d4321e,#8c1d14);color:#fff;border:none;padding:14px 44px;font-size:19px;font-weight:800;letter-spacing:4px;border-radius:10px;cursor:pointer;margin-top:8px">再 来 一 次</button>
+</div>
 <div id="start"><h2>连续二层单元楼 · 骨架</h2>
 <p>验证整栋楼<b>一个连续空间、连续可走</b>:卧室 →(走廊)→ 楼梯下楼(二楼→一楼)→ 单元门<br>WASD 走动 · 鼠标环顾 · 一开始<b>朝东(前方就是门)</b>,一直往前走<br>盯左下角 y:楼梯处会从 1.6 降到 一楼<br>(骨架空盒子,精细家具/迷宫拐弯随后加)</p>
 <button id="b">▶ 进入</button></div>
@@ -1343,18 +1350,39 @@ const EYE=1.6;
 let player=new THREE.Vector3(-9,EYE,0);
 let yaw=-Math.PI/2,pitch=-0.05,locked=false;const keys={};   // 朝东(门口方向)
 let won=false;
+let phase='wake', shake=0, quakeT=0, hazards=[], sinceSpawn=0;
+const startPos=new THREE.Vector3(-9,EYE,0);
+// WebAudio 地鸣
+let ac=null,rg=null;
+function initAudio(){try{ac=new(window.AudioContext||window.webkitAudioContext)();}catch(e){return;}rg=ac.createGain();rg.gain.value=0;rg.connect(ac.destination);const o=ac.createOscillator();o.type='sine';o.frequency.value=42;o.connect(rg);o.start();const n=ac.createBufferSource();const b=ac.createBuffer(1,ac.sampleRate*2,ac.sampleRate);const d=b.getChannelData(0);let l=0;for(let i=0;i<d.length;i++){const w=Math.random()*2-1;d[i]=(l+0.02*w)/1.02;l=d[i];d[i]*=3.3;}n.buffer=b;n.loop=true;const f=ac.createBiquadFilter();f.type='lowpass';f.frequency.value=180;n.connect(f);f.connect(rg);n.start();}
+function rumble(v){if(rg)rg.gain.setTargetAtTime(v,ac.currentTime,0.3);}
+function crash(){if(!ac)return;const sr=ac.createBufferSource(),g=ac.createGain();const b=ac.createBuffer(1,ac.sampleRate*0.6,ac.sampleRate);const d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2);sr.buffer=b;sr.connect(g);g.connect(ac.destination);g.gain.setValueAtTime(0.6,ac.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.6);sr.start();}
+const O=id=>document.getElementById(id);
+function setObj(t){O('obj').textContent=t;O('obj').style.opacity=t?1:0;}
+function wakeMsg(t){O('wake').textContent=t;O('wake').style.opacity=1;setTimeout(()=>O('wake').style.opacity=0,2400);}
+const mHaz=new THREE.MeshStandardMaterial({color:0xb0aca4,roughness:1});
+function spawnHazard(){const hx=player.x+(Math.random()-0.5)*4,hz=player.z+(Math.random()-0.5)*3;
+  const warn=new THREE.Mesh(new THREE.RingGeometry(0.4,0.6,18),new THREE.MeshBasicMaterial({color:0xff2010,transparent:true,opacity:.7,side:THREE.DoubleSide}));warn.rotation.x=-Math.PI/2;warn.position.set(hx,player.y-EYE+0.06,hz);scene.add(warn);
+  const ob=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.3,0.4),mHaz);ob.position.set(hx,player.y-EYE+3,hz);ob.castShadow=true;scene.add(ob);
+  hazards.push({warn,ob,hx,hz,baseY:player.y-EYE,t:0,fall:false,vy:0,done:false});}
+function clearHazards(){hazards.forEach(h=>{scene.remove(h.warn);scene.remove(h.ob);});hazards=[];}
+function die(reason){if(phase==='dead')return;phase='dead';rumble(0.15);if(locked)document.exitPointerLock();O('dreason').innerHTML=reason+'<br><b style=color:#7CFF9B>正确做法:护住头颈,远离会掉落的天花板,快速移动到安全处</b>';O('death').style.display='flex';}
+function startGame(){phase='wake';won=false;quakeT=0;shake=0;clearHazards();player.copy(startPos);yaw=-Math.PI/2;pitch=-0.05;O('death').style.display='none';O('win').style.display='none';
+  wakeMsg('凌晨 4:12……\n地面在震动。');
+  setTimeout(()=>{phase='quake';crash();rumble(0.85);setObj('⚠ 地震了!快往东逃出去——躲开砸下来的东西!');},2600);}
 const downRay=new THREE.Raycaster(),wallRay=new THREE.Raycaster();
 renderer.domElement.addEventListener('click',()=>{if(!locked&&!won)renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();});
 document.addEventListener('pointerlockchange',()=>locked=document.pointerLockElement===renderer.domElement);
 document.addEventListener('mousemove',e=>{if(!locked)return;yaw-=e.movementX*0.0022;pitch-=e.movementY*0.0022;pitch=Math.max(-1.3,Math.min(1.3,pitch));});
 addEventListener('keydown',e=>keys[e.code]=true);addEventListener('keyup',e=>keys[e.code]=false);
-document.getElementById('b').onclick=()=>{document.getElementById('start').style.display='none';renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();};
+document.getElementById('b').onclick=()=>{initAudio();document.getElementById('start').style.display='none';renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();startGame();};
+O('dretry').onclick=()=>{startGame();renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();};
 function canMove(from,to){const dir=new THREE.Vector3().subVectors(to,from);const dist=dir.length();if(dist<1e-5)return true;dir.normalize();
   wallRay.set(new THREE.Vector3(from.x,from.y-0.7,from.z),dir);wallRay.far=dist+0.3;return wallRay.intersectObjects(walls,false).length===0;}
 window.__walk=()=>{let p=player.clone(),logs=[];for(let i=0;i<420;i++){const to=new THREE.Vector3(p.x+0.1,p.y,p.z);if(canMove(p,to))p.x=to.x;else{logs.push("卡墙@x="+p.x.toFixed(1));break;}downRay.set(new THREE.Vector3(p.x,p.y+1.8,p.z),new THREE.Vector3(0,-1,0));downRay.far=12;const h=downRay.intersectObjects(grounds,false);if(h.length)p.y=h[0].point.y+EYE;else{logs.push("掉地板@x="+p.x.toFixed(1));break;}}return JSON.stringify({finalX:+p.x.toFixed(1),finalY:+p.y.toFixed(2),reachedExit:Math.abs(p.x-27.5)<2.2,logs});};
 const clock=new THREE.Clock();
 function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),0.05);
-  if(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD']){const sp=3.4*dt;const e=new THREE.Euler(0,yaw,0,'YXZ');const fwd=new THREE.Vector3(0,0,-1).applyEuler(e),rgt=new THREE.Vector3(1,0,0).applyEuler(e);
+  if((phase==='quake'||phase==='wake')&&(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD'])){const sp=3.4*dt;const e=new THREE.Euler(0,yaw,0,'YXZ');const fwd=new THREE.Vector3(0,0,-1).applyEuler(e),rgt=new THREE.Vector3(1,0,0).applyEuler(e);
     let mv=new THREE.Vector3();if(keys['KeyW'])mv.add(fwd);if(keys['KeyS'])mv.sub(fwd);if(keys['KeyA'])mv.sub(rgt);if(keys['KeyD'])mv.add(rgt);
     if(mv.lengthSq()>0){mv.normalize().multiplyScalar(sp);
       const tx=new THREE.Vector3(player.x+mv.x,player.y,player.z);if(canMove(player,tx))player.x=tx.x;
@@ -1362,7 +1390,14 @@ function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDel
   downRay.set(new THREE.Vector3(player.x,player.y+1.8,player.z),new THREE.Vector3(0,-1,0));downRay.far=12;
   const hit=downRay.intersectObjects(grounds,false);
   if(hit.length)player.y+=(hit[0].point.y+EYE-player.y)*Math.min(dt*10,1);
-  camera.position.copy(player);camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
+  let tg=phase==='quake'?0.22:0;tg*=(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD'])?1.3:0.7;shake+=(tg-shake)*Math.min(dt*4,1);const sk=shake;
+  camera.position.set(player.x+Math.sin(performance.now()*0.037)*0.04*sk,player.y+Math.cos(performance.now()*0.043)*0.04*sk,player.z+Math.sin(performance.now()*0.029)*0.03*sk);
+  camera.rotation.order='YXZ';camera.rotation.y=yaw+Math.cos(performance.now()*0.027)*0.012*sk;camera.rotation.x=pitch+Math.sin(performance.now()*0.031)*0.012*sk;camera.rotation.z=Math.sin(performance.now()*0.053)*0.03*sk;
+  // 地震:坠落危险
+  if(phase==='quake'){quakeT+=dt;sinceSpawn+=dt;if(sinceSpawn>1.3){sinceSpawn=0;spawnHazard();}
+    for(const h of hazards){if(h.done)continue;h.t+=dt;
+      if(!h.fall){h.warn.material.opacity=0.4+0.4*Math.sin(h.t*12);if(h.t>1.1){h.fall=true;scene.remove(h.warn);}}
+      else{h.vy-=dt*16;h.ob.position.y+=h.vy*dt;h.ob.rotation.x+=dt*3;if(h.ob.position.y<=h.baseY+0.2){h.ob.position.y=h.baseY+0.2;h.done=true;crash();if(Math.hypot(player.x-h.hx,player.z-h.hz)<0.85&&Math.abs(player.y-EYE-h.baseY)<1.5)die('被坠落的天花板碎块砸中。');}}}}
   if(!won&&Math.hypot(player.x-EXIT.x,player.z-EXIT.z)<1.8){won=true;document.getElementById('win').style.display='flex';if(locked)document.exitPointerLock();}
   document.getElementById('info').textContent='y='+player.y.toFixed(2)+' | x='+player.x.toFixed(1)+' z='+player.z.toFixed(1)+' | '+(player.y<-1?'一楼':'二楼');
   renderer.render(scene,camera);}
