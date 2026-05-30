@@ -5,17 +5,17 @@
 #hud{position:fixed;left:50%;top:7%;transform:translateX(-50%);color:#ffdf5a;font-size:18px;font-weight:700;text-shadow:0 0 12px #000;z-index:10;text-align:center}
 #info{position:fixed;left:16px;bottom:16px;color:#9cf;font-size:12px;font-family:monospace;z-index:10;text-shadow:0 1px 3px #000;line-height:1.5}
 #cross{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:rgba(255,255,255,.6);z-index:11}
-#win{position:fixed;inset:0;background:rgba(10,20,30,.7);z-index:20;display:none;align-items:center;justify-content:center;color:#fff;font-size:48px;font-weight:900;letter-spacing:8px;text-shadow:0 2px 20px #000}
+#win{position:fixed;inset:0;background:rgba(10,20,30,.72);z-index:20;display:none;align-items:center;justify-content:center;color:#fff;font-size:48px;font-weight:900;letter-spacing:8px;text-shadow:0 2px 20px #000}
 #start{position:fixed;inset:0;background:#0a0908;z-index:30;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;color:#9c6}
 #start button{background:none;border:1px solid #6a4;color:#9c6;padding:14px 40px;font-size:18px;letter-spacing:4px;border-radius:8px;cursor:pointer}
 #start p{color:#888;font-size:14px;line-height:1.8;text-align:center;max-width:560px}</style>
 </head><body>
 <div id="app"></div><div id="cross"></div>
-<div id="hud">连续空间骨架 · 从卧室一路走到一楼单元门(出门=通关)</div>
+<div id="hud">连续空间 · 从卧室往东走 → 楼梯下楼 → 一楼单元门(绿)</div>
 <div id="info"></div>
 <div id="win">你 逃 出 来 了</div>
-<div id="start"><h2>连续二层单元楼 · 骨架验证</h2>
-<p>验证整栋楼<b>连续可走</b>:卧室 →(曲折通道)→ 客厅 →(家门)→ 楼道 →(楼梯下楼)→ 一楼 → 单元门<br>WASD 走动 · 鼠标环顾 · 看左下角 y 数值在楼梯处会降<br>(这是骨架,房间是空盒子,精细家具随后填)</p>
+<div id="start"><h2>连续二层单元楼 · 骨架</h2>
+<p>验证整栋楼<b>一个连续空间、连续可走</b>:卧室 →(走廊)→ 楼梯下楼(二楼→一楼)→ 单元门<br>WASD 走动 · 鼠标环顾 · 一开始<b>朝东(前方就是门)</b>,一直往前走<br>盯左下角 y:楼梯处会从 1.6 降到 一楼<br>(骨架空盒子,精细家具/迷宫拐弯随后加)</p>
 <button id="b">▶ 进入</button></div>
 <script type="importmap">{ "imports": { "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" }}</script>
 <script type="module">
@@ -23,77 +23,58 @@ import * as THREE from 'three';
 const app=document.getElementById('app');
 const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.08;app.appendChild(renderer.domElement);
-const scene=new THREE.Scene();scene.background=new THREE.Color(0x717880);scene.fog=new THREE.Fog(0x666e77,9,40);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x717880);scene.fog=new THREE.Fog(0x666e77,10,45);
 const camera=new THREE.PerspectiveCamera(62,innerWidth/innerHeight,0.05,200);
 scene.add(new THREE.AmbientLight(0xaab2bc,0.42));
-const sun=new THREE.DirectionalLight(0xdce6f0,1.4);sun.position.set(10,20,8);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-30;sun.shadow.camera.right=30;sun.shadow.camera.top=30;sun.shadow.camera.bottom=-30;sun.shadow.camera.far=80;scene.add(sun);
-
-// 暖光(学卧室那种神秘暖灯,各房间放一盏)
-function warmLamp(x,y,z){const l=new THREE.PointLight(0xffd9a0,3.5,9,2);l.position.set(x,y,z);scene.add(l);return l;}
+const sun=new THREE.DirectionalLight(0xdce6f0,1.4);sun.position.set(12,22,8);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-40;sun.shadow.camera.right=40;sun.shadow.camera.top=40;sun.shadow.camera.bottom=-40;sun.shadow.camera.far=90;scene.add(sun);
+function warmLamp(x,y,z){const l=new THREE.PointLight(0xffd9a0,3.2,9,2);l.position.set(x,y,z);scene.add(l);return l;}
 
 const mFloor=new THREE.MeshStandardMaterial({color:0x8a857d,roughness:.9});
 const mWall=new THREE.MeshStandardMaterial({color:0xc6c4be,roughness:.95});
 const mStep=new THREE.MeshStandardMaterial({color:0x9a9994,roughness:.95});
-const mDoor=new THREE.MeshStandardMaterial({color:0x6b5640,roughness:.7});
 const mExit=new THREE.MeshStandardMaterial({color:0x2a6b2a,emissive:0x35c035,emissiveIntensity:.9});
 
 const grounds=[],walls=[];
 function ground(w,h,d,x,y,z,m){const e=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m||mFloor);e.position.set(x,y,z);e.receiveShadow=true;scene.add(e);grounds.push(e);return e;}
 function wallB(w,h,d,x,y,z,m){const e=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m||mWall);e.position.set(x,y,z);e.castShadow=e.receiveShadow=true;scene.add(e);walls.push(e);return e;}
-function deco(w,h,d,x,y,z,m){const e=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m||mWall);e.position.set(x,y,z);e.castShadow=e.receiveShadow=true;scene.add(e);return e;} // 不参与碰撞的装饰
+function deco(w,h,d,x,y,z,m){const e=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m||mWall);e.position.set(x,y,z);e.castShadow=e.receiveShadow=true;scene.add(e);return e;}
 
-// ======== 二层单元楼布局(俯视) ========
-// 二楼地面 y=0;一楼地面 y=-3.3。坐标系:卧室在西,通道往东,客厅,家门,楼道(带楼梯井),楼梯下到一楼,单元门。
-const H=3;               // 层高
-const F1=-3.3;           // 一楼地面 y
-// --- 卧室(二楼,中心(-9,0)) 8x8 房间,门在东墙(x=-5)开口 ---
-ground(8,0.3,8,-9,-0.15,0);              // 卧室地板(顶面y=0)
-deco(8,0.2,8,-9,H,0);                    // 天花板
-wallB(0.3,H,8,-13,H/2,0);                // 西墙
-wallB(8,H,0.3,-9,H/2,-4);                // 北墙
-wallB(8,H,0.3,-9,H/2,4);                 // 南墙
-wallB(0.3,H,2.5,-5,H/2,-2.75);           // 东墙上段(留门口)
-wallB(0.3,H,2.5,-5,H/2,2.75);            // 东墙下段
+// ============ 连续东西轴布局(确保地板无缝拼接) ============
+// 一条直线: 卧室[x-13..-5] → 走廊[x-5..14] → 楼梯[x14..19,下楼] → 一楼[x19..28]。全程 z∈[-2,2] 走廊宽,房间更宽。
+const H=3, F1=-3.3, CW=2;   // 层高 / 一楼y / 走廊半宽
+// --- 卧室(x:-13~-5, z:-4~4) ---
+ground(8,0.3,8,-9,-0.15,0);            deco(8,0.2,8,-9,H,0);
+wallB(0.3,H,8,-13,H/2,0);              // 西墙
+wallB(8,H,0.3,-9,H/2,-4);              // 北墙
+wallB(8,H,0.3,-9,H/2,4);              // 南墙
+wallB(0.3,H,(4-CW),-5,H/2,-(CW+(4-CW)/2)); // 东墙上段(留门 z∈[-2,2])
+wallB(0.3,H,(4-CW),-5,H/2, (CW+(4-CW)/2));  // 东墙下段
 warmLamp(-9,2.4,0);
-// --- 通道A(卧室→客厅):L形曲折,东墙门口(x=-5,z=0)出来 → 东走到x=-1 → 北拐到z=-6 → 东到x=5 ---
-// 段1:东向走廊 z∈[-1.5,1.5], x∈[-5,-1]
-ground(4,0.3,3,-3,-0.15,0); deco(4,0.2,3,-3,H,0);
-wallB(4,H,0.3,-3,H/2,-1.5); wallB(4,H,0.3,-3,H/2,1.5);
-// 段2:北向走廊 x∈[-2.5,0.5], z∈[-6,1.5]
-ground(3,0.3,7.5,-1,-0.15,-2.25); deco(3,0.2,7.5,-1,H,-2.25);
-wallB(0.3,H,7.5,-2.5,H/2,-2.25); wallB(0.3,H,5,-0.5,H/2,-3.5); // 东墙留口接段3
-warmLamp(-1,2.4,-3);
-// 段3:东向走廊 z∈[-6,-3], x∈[-0.5,5]
-ground(6,0.3,3,2,-0.15,-4.5); deco(6,0.2,3,2,H,-4.5);
-wallB(6,H,0.3,2,H/2,-6); wallB(4,H,0.3,3,H/2,-3); // 南墙留口接客厅
-// --- 客厅(中心(7,-1)) 8x8 ,北接通道(x=5,z=-4),东墙家门 ---
-ground(8,0.3,8,7,-0.15,-1); deco(8,0.2,8,7,H,-1);
-wallB(8,H,0.3,7,H/2,-5); wallB(0.3,H,8,3,H/2,-1);  // 北墙(留口在x=4.5附近?简化:北墙整段+通道口已在段3南墙) 西墙
-wallB(8,H,0.3,7,H/2,3);                            // 南墙
-wallB(0.3,H,2.5,11,H/2,-3.25); wallB(0.3,H,2.5,11,H/2,1.25); // 东墙留家门口(z=-1)
-warmLamp(7,2.4,-1);
-// 家门(客厅→楼道,可见木门框)
-deco(0.2,2.4,1.4,11,1.2,-1,mDoor);
-// --- 楼道(二楼公共楼道,中心(15,-1),带楼梯井) 6x10 ---
-ground(6,0.3,10,15,-0.15,-1); deco(6,0.2,4,15,H,-4); // 楼道前段天花板(楼梯井开口在后段)
-wallB(0.3,H,10,12,H/2,-1); wallB(0.3,H,10,18,H/2,-1); wallB(6,H,0.3,15,H/2,-6);
-warmLamp(13.5,2.4,-3);
-// --- 楼梯(楼道后段,从二楼y=0 下到一楼y=F1) 9级 ---
-const SN=9, SR=(0-F1)/SN, SRUN=0.55;
-for(let i=0;i<SN;i++){ const topY=-(i+1)*SR; const z=2-i*SRUN;
-  ground(5,0.3,SRUN+0.02,15,topY-0.15,z,mStep); }
-wallB(0.3,H,8,12,H/2,4); wallB(0.3,H,8,18,H/2,4); // 楼梯井两侧墙
-// --- 一楼(楼梯底,中心(15,7),y=F1) 单元门出室外 ---
-ground(8,0.3,8,15,F1-0.15,7); deco(8,0.2,8,15,F1+H,7);
-wallB(0.3,H,8,11,F1+H/2,7); wallB(0.3,H,8,19,F1+H/2,7); wallB(8,H,0.3,15,F1+H/2,3);
-// 单元门(一楼,z=11,绿色EXIT) — 走到这里=通关
-const exitDoor=deco(2,2.4,0.2,15,F1+1.2,11,mExit);
-const EXIT={x:15,z:11};
+// --- 走廊(x:-5~14, z:-2~2) 一整条连续地板 ---
+ground(19,0.3,4,4.5,-0.15,0);          deco(19,0.2,4,4.5,H,0);
+wallB(19,H,0.3,4.5,H/2,-2);            // 走廊北墙
+wallB(19,H,0.3,4.5,H/2,2);            // 走廊南墙
+warmLamp(0,2.4,0);warmLamp(7,2.4,0);warmLamp(13,2.4,0);
+// --- 楼梯(x:14~19, 往东下楼 y:0→F1) 9级 ---
+const SN=9, SR=(0-F1)/SN, SRUN=(19-14)/SN;
+for(let i=0;i<SN;i++){ const topY=-(i+1)*SR; const x=14+0.27+i*SRUN;
+  ground(SRUN+0.02,0.3,4,x,topY-0.15,0,mStep); }
+wallB((19-14),H,0.3,16.5,H/2-1.5,-2);  // 楼梯井北墙(下沉)
+wallB((19-14),H,0.3,16.5,H/2-1.5,2);  // 楼梯井南墙
+warmLamp(16.5,1.0,0);
+// --- 一楼走廊(x:19~28, z:-2~2, y=F1) ---
+ground(9,0.3,4,23.5,F1-0.15,0);        deco(9,0.2,4,23.5,F1+H,0);
+wallB(9,H,0.3,23.5,F1+H/2,-2);
+wallB(9,H,0.3,23.5,F1+H/2,2);
+warmLamp(22,F1+2.4,0);warmLamp(26,F1+2.4,0);
+// 单元门(一楼东端 x=28,绿色) — 走到=通关
+deco(0.3,2.4,3,28,F1+1.2,0,mExit);
+const EXIT={x:27.5,z:0};
 
-// ======== 第一人称 + 射线地面跟随 + 墙碰撞(从 stairtest 移植) ========
+// ============ 第一人称 + 射线地面跟随 + 墙碰撞 ============
 const EYE=1.6;
-let player=new THREE.Vector3(-9,EYE,0);  // 卧室中心起步
-let yaw=Math.PI/2,pitch=-0.05,locked=false;const keys={}; // 朝东(+x,通道方向)
+let player=new THREE.Vector3(-9,EYE,0);
+let yaw=-Math.PI/2,pitch=-0.05,locked=false;const keys={};   // 朝东(门口方向)
 let won=false;
 const downRay=new THREE.Raycaster(),wallRay=new THREE.Raycaster();
 renderer.domElement.addEventListener('click',()=>{if(!locked&&!won)renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();});
@@ -102,21 +83,21 @@ document.addEventListener('mousemove',e=>{if(!locked)return;yaw-=e.movementX*0.0
 addEventListener('keydown',e=>keys[e.code]=true);addEventListener('keyup',e=>keys[e.code]=false);
 document.getElementById('b').onclick=()=>{document.getElementById('start').style.display='none';renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();};
 function canMove(from,to){const dir=new THREE.Vector3().subVectors(to,from);const dist=dir.length();if(dist<1e-5)return true;dir.normalize();
-  wallRay.set(new THREE.Vector3(from.x,from.y-0.7,from.z),dir);wallRay.far=dist+0.35;return wallRay.intersectObjects(walls,false).length===0;}
+  wallRay.set(new THREE.Vector3(from.x,from.y-0.7,from.z),dir);wallRay.far=dist+0.3;return wallRay.intersectObjects(walls,false).length===0;}
+window.__walk=()=>{let p=player.clone(),logs=[];for(let i=0;i<420;i++){const to=new THREE.Vector3(p.x+0.1,p.y,p.z);if(canMove(p,to))p.x=to.x;else{logs.push("卡墙@x="+p.x.toFixed(1));break;}downRay.set(new THREE.Vector3(p.x,p.y+1.8,p.z),new THREE.Vector3(0,-1,0));downRay.far=12;const h=downRay.intersectObjects(grounds,false);if(h.length)p.y=h[0].point.y+EYE;else{logs.push("掉地板@x="+p.x.toFixed(1));break;}}return JSON.stringify({finalX:+p.x.toFixed(1),finalY:+p.y.toFixed(2),reachedExit:Math.abs(p.x-27.5)<2.2,logs});};
 const clock=new THREE.Clock();
 function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),0.05);
-  if(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD']){const sp=3.2*dt;const e=new THREE.Euler(0,yaw,0,'YXZ');const fwd=new THREE.Vector3(0,0,-1).applyEuler(e),rgt=new THREE.Vector3(1,0,0).applyEuler(e);
+  if(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD']){const sp=3.4*dt;const e=new THREE.Euler(0,yaw,0,'YXZ');const fwd=new THREE.Vector3(0,0,-1).applyEuler(e),rgt=new THREE.Vector3(1,0,0).applyEuler(e);
     let mv=new THREE.Vector3();if(keys['KeyW'])mv.add(fwd);if(keys['KeyS'])mv.sub(fwd);if(keys['KeyA'])mv.sub(rgt);if(keys['KeyD'])mv.add(rgt);
     if(mv.lengthSq()>0){mv.normalize().multiplyScalar(sp);
       const tx=new THREE.Vector3(player.x+mv.x,player.y,player.z);if(canMove(player,tx))player.x=tx.x;
       const tz=new THREE.Vector3(player.x,player.y,player.z+mv.z);if(canMove(player,tz))player.z=tz.z;}}
-  downRay.set(new THREE.Vector3(player.x,player.y+1.6,player.z),new THREE.Vector3(0,-1,0));downRay.far=10;
+  downRay.set(new THREE.Vector3(player.x,player.y+1.8,player.z),new THREE.Vector3(0,-1,0));downRay.far=12;
   const hit=downRay.intersectObjects(grounds,false);
-  if(hit.length)player.y+=(hit[0].point.y+EYE-player.y)*Math.min(dt*12,1);
+  if(hit.length)player.y+=(hit[0].point.y+EYE-player.y)*Math.min(dt*10,1);
   camera.position.copy(player);camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
-  // 通关检测(走到一楼单元门)
-  if(!won&&Math.hypot(player.x-EXIT.x,player.z-EXIT.z)<1.6&&player.y<F1+EYE+1){won=true;document.getElementById('win').style.display='flex';if(locked)document.exitPointerLock();}
-  document.getElementById('info').textContent='y(高度)='+player.y.toFixed(2)+' | xz=('+player.x.toFixed(1)+','+player.z.toFixed(1)+') | 楼层:'+(player.y<-1?'一楼':'二楼');
+  if(!won&&Math.hypot(player.x-EXIT.x,player.z-EXIT.z)<1.8){won=true;document.getElementById('win').style.display='flex';if(locked)document.exitPointerLock();}
+  document.getElementById('info').textContent='y='+player.y.toFixed(2)+' | x='+player.x.toFixed(1)+' z='+player.z.toFixed(1)+' | '+(player.y<-1?'一楼':'二楼');
   renderer.render(scene,camera);}
 animate();
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
