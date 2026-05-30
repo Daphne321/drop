@@ -171,10 +171,13 @@ const TIME_BASE=10;
 const $=id=>document.getElementById(id);
 function timeLimit(){ return Math.max(5, TIME_BASE - (level-1)*1.2); }
 
-renderer.domElement.addEventListener('click',()=>{ if(phase!=='start'&&phase!=='hook'&&!locked) (renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock()); });
+// 锁定鼠标指针。pointer lock 在某些时序(刚解锁就再锁/非用户手势)会失败并 reject，
+// 必须 catch 掉，否则会冒到全局错误捕获、在屏幕顶部跳红条(路演大忌)。
+function lockPointer(){ const el=renderer.domElement; if(!el.requestPointerLock)return; const p=el.requestPointerLock(); if(p&&p.catch)p.catch(()=>{}); }
+renderer.domElement.addEventListener('click',()=>{ if(phase!=='start'&&phase!=='hook'&&!locked) lockPointer(); });
 document.addEventListener('pointerlockchange',()=>{ locked=(document.pointerLockElement===renderer.domElement); $('pause').style.display=(!locked&&(phase==='calm'||phase==='action'))?'flex':'none'; });
 document.addEventListener('mousemove',e=>{ if(!locked)return; yaw-=e.movementX*0.0022; pitch-=e.movementY*0.0022; pitch=Math.max(-1.4,Math.min(1.4,pitch)); });
-$('pause').addEventListener('click',()=>(renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock()));
+$('pause').addEventListener('click',()=>lockPointer());
 addEventListener('keydown',e=>{ keys[e.code]=true; if(e.code==='KeyE') tryPick(); });
 addEventListener('keyup',e=>{ keys[e.code]=false; });
 
@@ -182,7 +185,7 @@ function sub(x){ $('subtitle').textContent=x; $('subtitle').style.opacity=1; } f
 
 // 移动端检测：当前为键鼠设计，手机没法操作，给出诚实提示
 if('ontouchstart' in window || /Mobile|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)){ const w=document.createElement('div'); w.style.cssText='color:#ff6a4d;font-size:14px;line-height:1.6;margin-top:12px;max-width:82%;text-align:center;'; w.innerHTML='⚠ 这个 demo 为电脑（键鼠）设计，手机触屏版开发中——<br>建议先用电脑打开'; const s=document.getElementById('start'); if(s) s.appendChild(w); }
-$('startBtn').onclick=()=>{ initAudio(); $('start').style.opacity=0; setTimeout(()=>$('start').style.display='none',400); (renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock()); beginIntro(); };
+$('startBtn').onclick=()=>{ initAudio(); $('start').style.opacity=0; setTimeout(()=>$('start').style.display='none',400); lockPointer(); beginIntro(); };
 $('retryBtn').onclick=()=>{ if(outcome==='survive') level++; resetRound(); };
 
 function beginIntro(){ phase='intro'; camY=EYE_Y; viewRadius=0.9; $('crosshair').style.opacity=1; $('controls').style.opacity=1;
@@ -215,7 +218,7 @@ function survive(){ phase='survived'; outcome='survive'; thud(); stopHeart(); se
 function resetRound(){ $('hook').style.opacity=0; $('revealCard').style.opacity=0; $('retryBtn').textContent='再 来 一 次'; hideSub(); $('safeText').style.opacity=0;
   ring.visible=false; windowPane.material.opacity=0.32; choices.forEach(c=>{c.obj.userData.flash=false;}); pendingObj=null;
   playerPos.set(0,EYE_Y,4); yaw=0; pitch=0; shake=0; viewRadius=0.9; camY=EYE_Y; vignette.uniforms.redPulse.value=0; setRumble(0); stopHeart();
-  (renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock()); beginIntro(); }
+  lockPointer(); beginIntro(); }
 
 // 调试钩子（CDP 自验证用，开发期）
 window.__g=()=>({phase,level,score,deaths,near:near&&near.name,playerPos:playerPos.toArray().map(v=>+v.toFixed(1))});
