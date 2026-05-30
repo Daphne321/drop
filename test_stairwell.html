@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SCP 楼梯间 — 美术标杆 test</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a;font-family:"PingFang SC","Microsoft YaHei",monospace;}
+  #app{position:fixed;inset:0;}
+  /* 准星：SCP 风格细十字，告诉玩家「视角中心」 */
+  #crosshair{position:fixed;left:50%;top:50%;width:18px;height:18px;margin:-9px;z-index:10;pointer-events:none;opacity:.5;}
+  #crosshair::before,#crosshair::after{content:"";position:absolute;background:#dfe2e0;}
+  #crosshair::before{left:8px;top:0;width:2px;height:18px;}
+  #crosshair::after{top:8px;left:0;height:2px;width:18px;}
+  /* 操作提示条 */
+  #hud{position:fixed;left:18px;bottom:16px;color:rgba(225,228,225,.55);font-size:13px;line-height:1.7;z-index:11;text-shadow:0 1px 3px #000;letter-spacing:.5px;}
+  #hud b{color:#eef0ee;}
+  /* 左上角伪监控标签，强化 SCP「被收容/被监视」氛围 */
+  #tag{position:fixed;left:18px;top:14px;color:rgba(180,200,190,.5);font-size:12px;line-height:1.6;z-index:11;letter-spacing:1px;font-family:monospace;text-shadow:0 1px 3px #000;}
+  #tag .rec{color:#e8463a;}
+  /* 错误条，方便隔空 debug */
+  #errbox{position:fixed;left:0;right:0;top:0;z-index:99999;background:#a00;color:#fff;font:13px monospace;padding:10px;white-space:pre-wrap;display:none;}
+</style>
+<script>
+// 全局错误捕获：任何 JS / 资源加载错误都打到屏幕红条上，方便隔空截图 debug
+function showErr(m){var b=document.getElementById('errbox');if(!b)return;b.style.display='block';b.textContent+='❌ '+m+'\n';}
+addEventListener('error',e=>showErr((e.message||(e.target&&e.target.src)||'加载失败')+' @'+String(e.filename||(e.target&&e.target.src)||'').split('/').pop()+':'+(e.lineno||'')),true);
+addEventListener('unhandledrejection',e=>showErr('Promise: '+(e.reason&&e.reason.message||e.reason)));
+</script>
+<!-- importmap：和主项目完全一致，three@0.160.0 + addons 从 jsdelivr CDN 引入。仅测试用，不打进 8MB 包 -->
+<script type="importmap">
+{ "imports": {
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="crosshair"></div>
+<div id="errbox"></div>
+<div id="tag">SCP-FACILITY · STAIRWELL B<br>SECTOR 7 — <span class="rec">● REC</span> CAM-04</div>
+<div id="hud"><b>鼠标拖拽</b> 转动视角　|　<b>滚轮</b> 前后　|　自动巡视已开启</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+/* ============================================================================
+   余震·DROP — SCP 收容失效风格室内楼梯间（美术标杆 test）
+   ----------------------------------------------------------------------------
+   设计目标：白净墙面 + 黑铁艺栏杆 + 灰水泥磨损台阶 + 折返式楼梯（含转折平台）。
+   全部几何体程序化生成，所有质感靠 Canvas 程序纹理 + PBR + 光照，零外部图片。
+   灵魂：灰白、明亮、看得清——AmbientLight 强、曝光高、后处理克制。
+   ============================================================================ */
+
+const app = document.getElementById('app');
+
+/* ---------- 渲染器：和主项目一致的 PBR/阴影/色彩配置 ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;            // 软阴影，避免硬边锯齿
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;          // 电影级色调映射，保住高光不死白
+renderer.toneMappingExposure = 1.32;                         // 曝光 >1.2，画面明亮（SCP 灵魂）
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xb7bdba);                // 冷灰白底色，雾里透出的墙色
+scene.fog = new THREE.Fog(0xc2c7c4, 10, 30);                // 远端淡雾偏亮，制造井道深度而非压黑
+
+const camera = new THREE.PerspectiveCamera(62, innerWidth/innerHeight, 0.05, 200);
+
+/* ============================================================================
+   一、程序化 Canvas 纹理工厂
+   ----------------------------------------------------------------------------
+   把「画材质」想象成给一面墙刷漆 + 做旧：
+   先铺底色，再撒噪点（蒙尘），再泼污渍，再划裂纹。每种表面一张专属纹理。
+   配套生成法线贴图：从灰度高度图算出每个像素的「朝向」，让平面在光下有凹凸。
+   ============================================================================ */
+
+// 值噪声：返回一张可平铺的灰度噪点画布（蒙尘/颗粒的基底）
+function makeNoiseCanvas(size, base, amp){
+  const c = document.createElement('canvas'); c.width=c.height=size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size,size);
+  for(let i=0;i<size*size;i++){
+    // 多频叠加，避免纯随机的「电视雪花」感，更像真实颗粒
+    const n = (Math.random()*0.6 + Math.random()*0.3 + Math.random()*0.1);
+    const v = Math.max(0,Math.min(255, base + (n-0.5)*2*amp));
+    img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v; img.data[i*4+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  return c;
+}
+
+// 从一张灰度高度画布生成法线贴图纹理（Sobel 算子求梯度 → 转成 RGB 法线）
+function heightToNormal(srcCanvas, strength){
+  const size = srcCanvas.width;
+  const sctx = srcCanvas.getContext('2d');
+  const src = sctx.getImageData(0,0,size,size).data;
+  const out = document.createElement('canvas'); out.width=out.height=size;
+  const octx = out.getContext('2d');
+  const dst = octx.createImageData(size,size);
+  const H = (x,y)=>{ x=(x+size)%size; y=(y+size)%size; return src[(y*size+x)*4]/255; };
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+    const dx = (H(x-1,y)-H(x+1,y))*strength;   // 左右高度差 = X 方向坡度
+    const dy = (H(x,y-1)-H(x,y+1))*strength;   // 上下高度差 = Y 方向坡度
+    const len = Math.hypot(dx,dy,1);
+    const i=(y*size+x)*4;
+    dst.data[i]   = (dx/len*0.5+0.5)*255;      // 法线 X → R
+    dst.data[i+1] = (dy/len*0.5+0.5)*255;      // 法线 Y → G
+    dst.data[i+2] = (1/len*0.5+0.5)*255;       // 法线 Z → B（始终偏蓝）
+    dst.data[i+3] = 255;
+  }
+  octx.putImageData(dst,0,0);
+  const tex = new THREE.CanvasTexture(out);
+  tex.wrapS=tex.wrapT=THREE.RepeatWrapping;
+  return tex;
+}
+
+// 工具：把画布包成可平铺纹理
+function toTex(canvas, repeatX, repeatY, srgb){
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.repeat.set(repeatX||1, repeatY||1);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  if(srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/* ---- 墙面：白净涂料 + 克制的细微脏污 + 几道细裂纹（明亮干净为主，做旧为辅） ----
+   关键教训：墙面是大面积平面，污渍若太重、范围太大，在掠射角下会糊成「烟雾团」
+   而不是脏点。所以这里只保留：极淡的色调不均 + 墙根浅水渍 + 细发丝裂纹，绝不画大块脏云。*/
+function makeWallTexture(){
+  const S=512, c=document.createElement('canvas'); c.width=c.height=S;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#ecebe6'; ctx.fillRect(0,0,S,S);          // 干净的暖白漆底
+  // 极淡的涂料色调不均（小范围、低透明度，几乎看不出，只为打破纯色塑料感）
+  for(let i=0;i<18;i++){
+    const g=ctx.createRadialGradient(Math.random()*S,Math.random()*S,0,Math.random()*S,Math.random()*S,40+Math.random()*60);
+    g.addColorStop(0,'rgba(222,220,212,0.06)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S);
+  }
+  // 墙根浅水渍（只在贴图底部一小条，强度低，模拟墙脚返潮）
+  for(let i=0;i<6;i++){
+    const x=Math.random()*S, y=S-Math.random()*70;
+    const g=ctx.createRadialGradient(x,y,0,x,y,18+Math.random()*28);
+    g.addColorStop(0,'rgba(150,148,136,0.10)'); g.addColorStop(1,'rgba(150,148,136,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S);
+  }
+  // 细发丝裂纹（细、深一点点，是清晰的线而非脏团，正是 SCP 破败感的来源）
+  ctx.strokeStyle='rgba(110,108,100,0.30)'; ctx.lineWidth=0.8;
+  for(let i=0;i<5;i++){
+    ctx.beginPath();
+    let x=Math.random()*S,y=Math.random()*S; ctx.moveTo(x,y);
+    for(let s=0;s<7;s++){ x+=(Math.random()-0.5)*55; y+=(Math.random()-0.3)*45; ctx.lineTo(x,y);}
+    ctx.stroke();
+  }
+  // 极细颗粒蒙尘（很淡，只为粗糙感）
+  const noise=makeNoiseCanvas(S,242,10);
+  ctx.globalAlpha=0.06; ctx.drawImage(noise,0,0); ctx.globalAlpha=1;
+  return c;
+}
+
+/* ---- 水泥台阶：灰水泥 + 边缘磨损（中间被踩白、边角崩坏） ---- */
+function makeConcreteTexture(){
+  const S=512, c=document.createElement('canvas'); c.width=c.height=S;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#9a9994'; ctx.fillRect(0,0,S,S);            // 中灰水泥底
+  // 水泥的云斑（浇筑不均）
+  for(let i=0;i<60;i++){
+    const g=ctx.createRadialGradient(Math.random()*S,Math.random()*S,0,Math.random()*S,Math.random()*S,40+Math.random()*90);
+    const dark=Math.random()>0.5;
+    g.addColorStop(0,dark?'rgba(110,109,104,0.22)':'rgba(175,174,168,0.20)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S);
+  }
+  // 踩踏磨损：水平中带偏白（人走的路径）
+  const wear=ctx.createLinearGradient(0,0,0,S);
+  wear.addColorStop(0,'rgba(190,189,183,0)');
+  wear.addColorStop(0.5,'rgba(195,194,188,0.28)');
+  wear.addColorStop(1,'rgba(190,189,183,0)');
+  ctx.fillStyle=wear; ctx.fillRect(0,0,S,S);
+  // 崩裂的小坑（深色斑点 + 浅边）
+  for(let i=0;i<50;i++){
+    const x=Math.random()*S,y=Math.random()*S,r=1+Math.random()*4;
+    ctx.fillStyle=`rgba(70,69,65,${0.25+Math.random()*0.3})`;
+    ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  }
+  // 几道刮痕
+  ctx.strokeStyle='rgba(60,59,55,0.3)'; ctx.lineWidth=1;
+  for(let i=0;i<10;i++){ ctx.beginPath(); const x=Math.random()*S,y=Math.random()*S; ctx.moveTo(x,y); ctx.lineTo(x+(Math.random()-0.5)*120,y+(Math.random()-0.5)*40); ctx.stroke();}
+  // 颗粒
+  const noise=makeNoiseCanvas(S,150,40);
+  ctx.globalAlpha=0.22; ctx.drawImage(noise,0,0); ctx.globalAlpha=1;
+  return c;
+}
+
+/* ---- 黑铁：磨砂铁艺，带一点高光不均（金属感） ---- */
+function makeIronTexture(){
+  const S=256, c=document.createElement('canvas'); c.width=c.height=S;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#1c1d1f'; ctx.fillRect(0,0,S,S);
+  // 不均的磨砂高光（铁条表面的反光斑）
+  for(let i=0;i<30;i++){
+    const g=ctx.createRadialGradient(Math.random()*S,Math.random()*S,0,Math.random()*S,Math.random()*S,20+Math.random()*40);
+    g.addColorStop(0,'rgba(90,92,96,0.25)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S);
+  }
+  // 锈点（暗红褐色小斑，做旧）
+  for(let i=0;i<40;i++){
+    const x=Math.random()*S,y=Math.random()*S,r=0.6+Math.random()*2;
+    ctx.fillStyle=`rgba(${90+Math.random()*40},${50+Math.random()*20},30,${0.2+Math.random()*0.3})`;
+    ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  }
+  const noise=makeNoiseCanvas(S,40,30);
+  ctx.globalAlpha=0.3; ctx.drawImage(noise,0,0); ctx.globalAlpha=1;
+  return c;
+}
+
+/* ---- 地面平台/天花板：粗水泥 ---- */
+function makeFloorTexture(){
+  const S=512, c=document.createElement('canvas'); c.width=c.height=S;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#8e8d88'; ctx.fillRect(0,0,S,S);
+  for(let i=0;i<80;i++){
+    const g=ctx.createRadialGradient(Math.random()*S,Math.random()*S,0,Math.random()*S,Math.random()*S,30+Math.random()*70);
+    g.addColorStop(0,Math.random()>0.5?'rgba(100,99,94,0.25)':'rgba(165,164,158,0.2)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,S,S);
+  }
+  // 分缝线（水泥地的伸缩缝）
+  ctx.strokeStyle='rgba(55,54,50,0.4)'; ctx.lineWidth=2;
+  ctx.strokeRect(2,2,S-4,S-4);
+  const noise=makeNoiseCanvas(S,140,45);
+  ctx.globalAlpha=0.25; ctx.drawImage(noise,0,0); ctx.globalAlpha=1;
+  return c;
+}
+
+// 生成纹理实例（颜色贴图 + 配套法线贴图）
+const wallCanvas=makeWallTexture();
+const wallMap=toTex(wallCanvas,2,2.5,true);
+// 墙面法线用很细的噪点（amp 小）+ 低强度，制造极轻微的涂料颗粒，不产生大块凹凸暗斑
+const wallNormal=heightToNormal(makeNoiseCanvas(512,128,14),0.5); wallNormal.repeat.set(2,2.5);
+
+const concCanvas=makeConcreteTexture();
+const concMap=toTex(concCanvas,1,1,true);
+const concNormal=heightToNormal(concCanvas,2.0); concNormal.repeat.set(1,1);
+
+const ironCanvas=makeIronTexture();
+const ironMap=toTex(ironCanvas,1,3,true);
+const ironNormal=heightToNormal(ironCanvas,1.0);
+
+const floorCanvas=makeFloorTexture();
+const floorMap=toTex(floorCanvas,3,3,true);
+const floorNormal=heightToNormal(floorCanvas,2.2); floorNormal.repeat.set(3,3);
+
+/* ---------- PBR 材质 ---------- */
+const wallMat = new THREE.MeshStandardMaterial({ map:wallMap, normalMap:wallNormal, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.9, metalness:0.0, color:0xffffff });
+const stepMat = new THREE.MeshStandardMaterial({ map:concMap, normalMap:concNormal, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.96, metalness:0.0 });
+const floorMat= new THREE.MeshStandardMaterial({ map:floorMap, normalMap:floorNormal, normalScale:new THREE.Vector2(0.7,0.7), roughness:0.95, metalness:0.0 });
+const ironMat = new THREE.MeshStandardMaterial({ map:ironMap, normalMap:ironNormal, normalScale:new THREE.Vector2(0.3,0.3), roughness:0.45, metalness:0.85, color:0x16171a });
+const trimMat = new THREE.MeshStandardMaterial({ map:concMap, roughness:0.9, metalness:0.0, color:0xdedcd5 }); // 墙裙/踢脚
+
+/* ============================================================================
+   二、楼梯间几何体搭建
+   ----------------------------------------------------------------------------
+   坐标约定：Y 向上。井道在 X∈[-W/2,W/2]，往 -Z 方向延伸。
+   折返式楼梯：从顶层平台出发 → 第一跑梯往下到「转折平台」→ 掉头 → 第二跑梯往下到下层平台。
+   每一跑用「踏面(水平板) + 踢面(竖直板)」逐级拼出真实台阶，不用斜坡糊弄。
+   ============================================================================ */
+
+const ROOM_W = 6.4;     // 井道宽（X）
+const WELL_GAP = 0.5;   // 两跑梯之间的井道缝隙
+const STEP_RUN = 0.30;  // 踏面进深
+const STEP_RISE= 0.175; // 踢面高度（接近真实 17.5cm）
+const STEP_W   = (ROOM_W - WELL_GAP)/2 - 0.15; // 单跑梯宽度
+const N_STEP   = 9;     // 每跑台阶数
+const FLIGHT_DROP = N_STEP*STEP_RISE;          // 一跑下降高度
+const FLIGHT_LEN  = N_STEP*STEP_RUN;           // 一跑水平投影长
+
+const world = new THREE.Group(); scene.add(world);
+
+// 复用的盒子工厂：给定尺寸 + 位置 + 材质，返回带阴影的 Mesh
+function box(w,h,d,mat){ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat); m.castShadow=true; m.receiveShadow=true; return m; }
+
+/* ---- 生成一跑楼梯（含每级踏面、踢面、侧梁、磨损前沿）----
+   topY/topZ：本跑「最高那级踏面顶」的中心高度与 Z；xCenter：这跑在 X 上的中心。
+   dir：+1 表示往 -Z 走下楼，-1 表示往 +Z 走下楼（折返靠它掉头）。
+   返回这跑结束时（最低级）的 Y 和 Z，供下一跑接续。 */
+function buildFlight(xCenter, topY, topZ, dir){
+  const g=new THREE.Group();
+  for(let i=0;i<N_STEP;i++){
+    const y = topY - i*STEP_RISE;
+    const z = topZ - dir*(i*STEP_RUN);
+    // 踏面（水平踩踏板）
+    const tread=box(STEP_W, 0.05, STEP_RUN, stepMat);
+    tread.position.set(xCenter, y, z);
+    g.add(tread);
+    // 踢面（台阶正面那块竖板）—— 真实台阶的关键细节
+    const riser=box(STEP_W, STEP_RISE, 0.04, stepMat);
+    riser.position.set(xCenter, y-STEP_RISE/2+0.025, z + dir*(STEP_RUN/2));
+    g.add(riser);
+    // 磨损前沿（踏面前缘被踩出的浅色金属/水泥包边，亮一点）
+    const nosing=box(STEP_W, 0.025, 0.05, trimMat);
+    nosing.position.set(xCenter, y+0.015, z - dir*(STEP_RUN/2-0.02));
+    g.add(nosing);
+  }
+  // 侧梁（楼梯帮板，把台阶斜着包起来，体量真实感来源）
+  const beamLen=Math.hypot(FLIGHT_LEN, FLIGHT_DROP)+0.2;
+  const beam=new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.42, beamLen), stepMat);
+  beam.castShadow=true; beam.receiveShadow=true;
+  // 沿楼梯斜向放置：先定中心，再绕 X 轴旋转匹配坡度
+  const midY=topY - (N_STEP-1)*STEP_RISE/2 - 0.18;
+  const midZ=topZ - dir*((N_STEP-1)*STEP_RUN/2);
+  beam.position.set(xCenter - (STEP_W/2+0.06), midY, midZ);
+  beam.rotation.x = dir*Math.atan2(FLIGHT_DROP, FLIGHT_LEN);
+  g.add(beam);
+  const beam2=beam.clone(); beam2.position.x = xCenter + (STEP_W/2+0.06); g.add(beam2);
+
+  // ---- 栏杆系统（井道侧）：黑铁立柱 + 顶部扶手 + 中间横档 ----
+  // 想象成沿楼梯坡度架一道斜的黑铁围栏，每级附近一根立柱
+  buildRailing(g, xCenter, topY, topZ, dir);
+
+  world.add(g);
+  const endY = topY - (N_STEP-1)*STEP_RISE;
+  const endZ = topZ - dir*((N_STEP-1)*STEP_RUN);
+  return { endY, endZ };
+}
+
+/* ---- 沿一跑楼梯架黑铁栏杆（井道一侧）----
+   细黑铁条立柱 + 圆管扶手 + 一道中横档。扶手用圆柱体顺坡旋转。 */
+function buildRailing(g, xCenter, topY, topZ, dir){
+  // 栏杆架在「靠井道中缝」那一侧：左跑梯(dir>0)栏杆在右边缘，右跑梯(dir<0)在左边缘
+  const side = (dir>0)? (xCenter + (STEP_W/2)-0.02) : (xCenter - (STEP_W/2)+0.02);
+  // 立柱（每一级一根细黑铁条）
+  for(let i=0;i<N_STEP;i+=1){
+    const y=topY - i*STEP_RISE;
+    const z=topZ - dir*(i*STEP_RUN);
+    const post=new THREE.Mesh(new THREE.CylinderGeometry(0.014,0.014,0.92,8), ironMat);
+    post.castShadow=true;
+    post.position.set(side, y+0.46, z);
+    g.add(post);
+  }
+  // 扶手（圆管，顺坡旋转）
+  const handLen=Math.hypot(FLIGHT_LEN, FLIGHT_DROP)+0.1;
+  const hand=new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.028,handLen,12), ironMat);
+  hand.castShadow=true;
+  const midY=topY - (N_STEP-1)*STEP_RISE/2 + 0.9;
+  const midZ=topZ - dir*((N_STEP-1)*STEP_RUN/2);
+  hand.position.set(side, midY, midZ);
+  hand.rotation.x = Math.PI/2 + dir*Math.atan2(FLIGHT_DROP, FLIGHT_LEN);
+  g.add(hand);
+  // 中横档（细一点的铁条，平行扶手，约半高处）
+  const mid=new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,handLen,8), ironMat);
+  mid.castShadow=true;
+  mid.position.set(side, midY-0.42, midZ);
+  mid.rotation.x = Math.PI/2 + dir*Math.atan2(FLIGHT_DROP, FLIGHT_LEN);
+  g.add(mid);
+}
+
+/* ---- 平台（休息平台 / 楼层平台）：一块水泥板 + 四周护栏 ---- */
+function buildLanding(cx, y, z, w, d, railSides){
+  const slab=box(w, 0.18, d, floorMat);
+  slab.position.set(cx, y-0.09, z);
+  world.add(slab);
+  // 平台边缘黑铁护栏（railSides 指定哪几条边要栏杆：{front,back,left,right}）
+  const postH=0.92;
+  function railLine(x1,z1,x2,z2){
+    const len=Math.hypot(x2-x1,z2-z1);
+    const ang=Math.atan2(z2-z1,x2-x1);
+    // 顶部扶手
+    const hand=new THREE.Mesh(new THREE.CylinderGeometry(0.026,0.026,len,12),ironMat);
+    hand.castShadow=true;
+    hand.position.set((x1+x2)/2, y+postH, (z1+z2)/2);
+    hand.rotation.z=Math.PI/2; hand.rotation.y=-ang;
+    world.add(hand);
+    // 中横档
+    const mid=new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,len,8),ironMat);
+    mid.castShadow=true;
+    mid.position.set((x1+x2)/2, y+postH*0.5, (z1+z2)/2);
+    mid.rotation.z=Math.PI/2; mid.rotation.y=-ang;
+    world.add(mid);
+    // 立柱
+    const n=Math.max(2,Math.round(len/0.34));
+    for(let k=0;k<=n;k++){
+      const t=k/n;
+      const post=new THREE.Mesh(new THREE.CylinderGeometry(0.014,0.014,postH,8),ironMat);
+      post.castShadow=true;
+      post.position.set(x1+(x2-x1)*t, y+postH/2, z1+(z2-z1)*t);
+      world.add(post);
+    }
+  }
+  const hw=w/2, hd=d/2;
+  if(railSides.front) railLine(cx-hw,z+hd, cx+hw,z+hd);
+  if(railSides.back)  railLine(cx-hw,z-hd, cx+hw,z-hd);
+  if(railSides.left)  railLine(cx-hw,z-hd, cx-hw,z+hd);
+  if(railSides.right) railLine(cx+hw,z-hd, cx+hw,z+hd);
+  return slab;
+}
+
+/* ============================================================================
+   三、组装整个楼梯井（顶层平台 → 一跑下行 → 转折平台 → 二跑折返下行 → 下层平台）
+   ----------------------------------------------------------------------------
+   关键：让「平台」和「跑梯」在 Z 上分占不重叠的区段，避免几何穿插糊成一团。
+   Z 轴布局（数字越小越靠井道深处 / 越远离玩家）：
+     [前 0.0 ~ +2.0]  顶层平台（玩家站这，往 -Z 俯视）
+     (0.0 ~ -2.7)     第一跑：从顶层下到 -2.7，朝 -Z
+     [-2.7 ~ -4.4]    转折平台（折返掉头处，在井道最深端）
+     (-2.7 ~ 0.0)     第二跑：从转折平台折返，朝 +Z，再下一层
+     [前 0.0 ~ +2.0]  下层平台（正落在顶层平台正下方，井道俯视能看穿到底）
+   ============================================================================ */
+const TOP_Y = 0;                          // 玩家所站顶层平台地面 Y
+const xLeft  = -(WELL_GAP/2 + STEP_W/2);  // 左跑梯 X 中心
+const xRight =  (WELL_GAP/2 + STEP_W/2);  // 右跑梯 X 中心
+
+const LAND_D = 1.7;                        // 平台进深
+const topFrontZ = 2.0;                     // 顶层平台前沿（最靠玩家）
+const flight1TopZ = 0.0;                   // 第一跑最高级所在 Z（顶层平台前缘）
+
+// 顶层平台（玩家起点）：中心在 flight1TopZ + LAND_D/2，前/左/右有栏，朝井道(-Z)那边无栏要下楼
+buildLanding(0, TOP_Y, flight1TopZ + LAND_D/2 + 0.05, ROOM_W-0.3, LAND_D+0.1, {front:true,back:false,left:true,right:true});
+
+// 第一跑：左跑梯，从顶层往 -Z 下到转折平台
+const f1 = buildFlight(xLeft, TOP_Y-STEP_RISE, flight1TopZ - STEP_RUN, +1);
+const landY = f1.endY;                     // 转折平台高度 = 第一跑落点
+const landFarZ = f1.endZ - STEP_RUN/2;     // 转折平台靠井道深端起点
+
+// 转折平台：横跨整个井道，落在第一跑底端，是折返掉头的地方
+const landZ = landFarZ - LAND_D/2;         // 平台中心
+buildLanding(0, landY, landZ, ROOM_W-0.3, LAND_D, {front:false,back:true,left:true,right:true});
+
+// 第二跑：右跑梯，从转折平台折返朝 +Z，再下一层
+const f2 = buildFlight(xRight, landY-STEP_RISE, f1.endZ, -1);
+const botY = f2.endY;                      // 下层平台高度
+
+// 下层平台：正落在顶层平台正下方（井道俯视一眼看穿到底），前/左/右有栏
+const botZ = flight1TopZ + LAND_D/2 + 0.05;
+buildLanding(0, botY, botZ, ROOM_W-0.3, LAND_D+0.1, {front:true,back:false,left:true,right:true});
+
+/* ---- 井道墙体：四面白墙 + 踢脚线，把楼梯包成封闭井道 ---- */
+const wallH = 8.4;                         // 墙够高，从下层平台一路包到顶层天花板
+const wallTopY = TOP_Y+1.6;                // 墙体顶部参考（顶层平台之上的净空）
+const zFront = topFrontZ + 0.4;            // 井道前端（玩家身后）
+const zBack  = landFarZ - LAND_D - 0.3;    // 井道深端（转折平台之后）
+const zSpan  = zFront - zBack;
+const zMid   = (zFront+zBack)/2;
+
+// 墙体竖直范围：从最底层平台下方 wallBottomY 一路包到天花板 ceilY
+const ceilY = wallTopY + 1.2;             // 天花板底标高（顶层平台净空 ~2.8m）
+const wallBottomY = botY - 0.4;           // 墙根，略低于最底层平台
+const wallHt = ceilY - wallBottomY;       // 实际墙高
+const wallCY = (ceilY + wallBottomY)/2;   // 墙体竖直中心
+
+// 左右墙
+function sideWall(x){
+  const w=box(0.3, wallHt, zSpan+0.6, wallMat);
+  w.position.set(x, wallCY, zMid);
+  world.add(w);
+  // 踢脚线（墙根那条略深的水泥裙），各层平台高度各加一条
+  [TOP_Y, landY, botY].forEach(fy=>{
+    const skirt=box(0.34, 0.2, zSpan+0.6, trimMat);
+    skirt.position.set(x>0? x-0.02 : x+0.02, fy+0.1, zMid);
+    world.add(skirt);
+  });
+}
+sideWall(-(ROOM_W/2+0.05));
+sideWall( (ROOM_W/2+0.05));
+
+// 后墙（井道深端）
+const backWall=box(ROOM_W+0.6, wallHt, 0.3, wallMat);
+backWall.position.set(0, wallCY, zBack-0.15);
+world.add(backWall);
+// 前墙（玩家背后）
+const frontWall=box(ROOM_W+0.6, wallHt, 0.3, wallMat);
+frontWall.position.set(0, wallCY, zFront+0.15);
+world.add(frontWall);
+
+// 天花板（粗水泥，用偏亮的灰白材质，避免顶部一片死灰）
+const ceilMat=new THREE.MeshStandardMaterial({ map:floorMap, normalMap:floorNormal, normalScale:new THREE.Vector2(0.4,0.4), roughness:0.92, metalness:0.0, color:0xcdd0cc });
+const ceil=box(ROOM_W+0.6, 0.3, zSpan+0.6, ceilMat);
+ceil.position.set(0, ceilY+0.15, zMid);
+world.add(ceil);
+
+/* ---- 墙面细节：门、配电箱、应急灯、SCP 风格标识牌、管线 ---- */
+// 一扇关着的安全门（在转折平台侧墙）
+const door=box(0.08,2.0,0.9, new THREE.MeshStandardMaterial({color:0x6f7a74,roughness:0.6,metalness:0.5,map:ironMap}));
+door.position.set(-(ROOM_W/2-0.06), landY+1.0, landZ);
+world.add(door);
+const doorFrame=box(0.12,2.2,1.06, trimMat);
+doorFrame.position.set(-(ROOM_W/2-0.02), landY+1.0, landZ);
+world.add(doorFrame);
+// 门把手
+const knob=new THREE.Mesh(new THREE.SphereGeometry(0.04,12,12),ironMat);
+knob.position.set(-(ROOM_W/2-0.14), landY+1.0, landZ+0.32);
+world.add(knob);
+
+// 配电箱（金属灰盒，墙上）
+const panel=box(0.1,0.6,0.45, new THREE.MeshStandardMaterial({color:0x8a8f8c,roughness:0.5,metalness:0.6,map:ironMap}));
+panel.position.set((ROOM_W/2-0.06), TOP_Y+1.3, flight1TopZ-1.6);
+world.add(panel);
+
+// SCP 标识牌（程序纹理画字，挂后墙）
+function makeSignTexture(){
+  const c=document.createElement('canvas'); c.width=256;c.height=128;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#d9d6cd';ctx.fillRect(0,0,256,128);
+  ctx.strokeStyle='#2a2a2a';ctx.lineWidth=6;ctx.strokeRect(8,8,240,112);
+  ctx.fillStyle='#c0392b';ctx.fillRect(8,8,240,30);
+  ctx.fillStyle='#fff';ctx.font='bold 22px monospace';ctx.fillText('CAUTION',16,30);
+  ctx.fillStyle='#222';ctx.font='bold 30px monospace';ctx.fillText('STAIRWELL  B',20,72);
+  ctx.font='16px monospace';ctx.fillText('SECTOR 7 · LEVEL -3 → -4',20,100);
+  return new THREE.CanvasTexture(c);
+}
+const sign=new THREE.Mesh(new THREE.PlaneGeometry(1.1,0.55), new THREE.MeshStandardMaterial({map:makeSignTexture(),roughness:0.8}));
+sign.position.set(0, landY+1.5, zBack+0.16);     // 挂在井道深端墙上、转折平台上方，俯视下行时正好看见
+world.add(sign);
+
+// 顶部沿墙走的管线（黑铁管，增加工业 SCP 感），贴天花板下方
+for(let i=0;i<2;i++){
+  const pipe=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,zSpan,10), new THREE.MeshStandardMaterial({color:0x4a4d4f,roughness:0.5,metalness:0.7}));
+  pipe.castShadow=true;
+  pipe.rotation.x=Math.PI/2;
+  pipe.position.set(-(ROOM_W/2-0.35)+i*0.25, ceilY-0.35, zMid);
+  world.add(pipe);
+}
+
+// 地上散落的碎屑（小水泥块，收容失效后的破败）
+for(let i=0;i<24;i++){
+  const s=0.04+Math.random()*0.08;
+  const deb=new THREE.Mesh(new THREE.BoxGeometry(s,s*0.6,s*1.2), stepMat);
+  deb.castShadow=true; deb.receiveShadow=true;
+  deb.rotation.set(Math.random()*3,Math.random()*3,Math.random()*3);
+  // 撒在各平台上
+  const onTop=Math.random();
+  if(onTop<0.4){ deb.position.set((Math.random()-0.5)*(ROOM_W-1), TOP_Y+s/2, flight1TopZ+0.9+(Math.random()-0.5)*1.4); }
+  else if(onTop<0.7){ deb.position.set((Math.random()-0.5)*(ROOM_W-1), landY+s/2, landZ+(Math.random()-0.5)*1.4); }
+  else { deb.position.set((Math.random()-0.5)*(ROOM_W-1), botY+s/2, botZ+(Math.random()-0.5)*1.4); }
+  world.add(deb);
+}
+
+/* ============================================================================
+   四、灯光：明亮但压抑（SCP 灵魂）—— 强环境光 + 顶部主光 + 应急灯点缀
+   ============================================================================ */
+// 强环境光：保证每个角落都看得清，不死黑（封闭井道里这是主照明，必须够强）
+scene.add(new THREE.AmbientLight(0xc8ccca, 1.05));
+// 半球光：天花板冷白 / 地面暖灰，模拟井道漫反射，把光「灌」到楼梯深处
+scene.add(new THREE.HemisphereLight(0xe6ebe8, 0x7a7770, 0.85));
+// 井道内向下的柔和补光（不投阴影）—— 专门照亮被天花板挡住的下行楼梯，杜绝越下越黑
+const wellFill=new THREE.DirectionalLight(0xeef2f0, 0.85);
+wellFill.position.set(0, 12, -3); wellFill.target.position.set(0, -2, landZ);
+scene.add(wellFill); scene.add(wellFill.target);
+
+// 主方向光：从上方斜射，投出栏杆/台阶的清晰阴影（结构立体感的来源；强度适中避免阴影把下行楼梯压黑）
+const sun=new THREE.DirectionalLight(0xf2f4f1, 0.85);
+sun.position.set(3.5, 9, 2);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.near=0.5; sun.shadow.camera.far=40;
+sun.shadow.camera.left=-8; sun.shadow.camera.right=8;
+sun.shadow.camera.top=8; sun.shadow.camera.bottom=-8;
+sun.shadow.bias=-0.0004;
+sun.shadow.normalBias=0.02;
+scene.add(sun);
+
+// 嵌顶日光灯（冷白长条灯管 + 点光源，是井道主照明，把光灌到楼梯每一级）
+function tubeLight(x,z,y){
+  const tube=new THREE.Mesh(new THREE.BoxGeometry(1.3,0.07,0.18), new THREE.MeshStandardMaterial({color:0xffffff,emissive:0xeef4ff,emissiveIntensity:1.8}));
+  tube.position.set(x, y, z);              // 吊在天花板下方，灯管可见
+  world.add(tube);
+  const l=new THREE.PointLight(0xeaf2ff, 1.6, 18, 1.5);
+  l.position.set(x, y-0.2, z);
+  scene.add(l);
+}
+// 顶层上方 + 井道中段 + 转折平台上方各一盏，确保整条楼梯都亮
+tubeLight(0, flight1TopZ+0.6, ceilY-0.15);
+tubeLight(0, (flight1TopZ+f1.endZ)/2, ceilY-0.15);
+tubeLight(0, landZ, ceilY-0.15);
+// 深端补光：照亮井道尽头的后墙 + 转折平台，避免背景一片灰murk
+const backFill=new THREE.PointLight(0xe8eef0, 1.0, 14, 1.6);
+backFill.position.set(0, landY+1.6, zBack+1.2);
+scene.add(backFill);
+
+// 应急灯（暗红小灯，SCP 收容失效标志，点缀但不压暗主调）
+const emLight=new THREE.PointLight(0xff3b22, 0.6, 5, 2);
+emLight.position.set((ROOM_W/2-0.25), landY+1.8, landZ);
+scene.add(emLight);
+const emBox=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.1,0.1), new THREE.MeshStandardMaterial({color:0x551510,emissive:0xff2a14,emissiveIntensity:2.2}));
+emBox.position.set((ROOM_W/2-0.12), landY+1.85, landZ);
+world.add(emBox);
+
+/* ============================================================================
+   五、后处理：克制的 Bloom + 轻暗角（绝不把画面弄黑）
+   ============================================================================ */
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+// 轻 Bloom：只让灯管/应急灯微微发光，强度低、阈值高，不污染整体亮度
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.22, 0.45, 0.92);
+composer.addPass(bloom);
+// 轻暗角 + 极淡颗粒：营造监控画面质感，但中心保持明亮
+const vignetteShader={
+  uniforms:{ tDiffuse:{value:null}, time:{value:0} },
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`
+    uniform sampler2D tDiffuse; uniform float time; varying vec2 vUv;
+    float rand(vec2 c){ return fract(sin(dot(c,vec2(12.9898,78.233)))*43758.5453); }
+    void main(){
+      vec4 col=texture2D(tDiffuse,vUv);
+      // 暗角：仅压暗四角约 22%，中心几乎不变（保住明亮）
+      vec2 d=vUv-0.5;
+      float vig=smoothstep(0.85,0.35,length(d));
+      col.rgb*=mix(0.78,1.0,vig);
+      // 极淡监控颗粒
+      float g=(rand(vUv*vec2(800.0,600.0)+time)-0.5)*0.025;
+      col.rgb+=g;
+      gl_FragColor=col;
+    }`
+};
+const vignettePass=new ShaderPass(vignetteShader);
+composer.addPass(vignettePass);
+
+/* ============================================================================
+   六、相机控制：第一人称站楼梯顶往下看 + 鼠标拖拽转视角 + 缓慢巡视
+   ============================================================================ */
+// 站在顶层平台靠井道口（左跑梯入口上方），眼高 1.62m，正对第一跑下行台阶
+camera.position.set(xLeft*0.5, TOP_Y+1.62, flight1TopZ+1.1);
+let yaw=Math.PI, pitch=-0.34;                       // 朝井道下方(-Z)俯视，让下行台阶 + 转折平台充满画面
+let idleEnabled=false;                              // 进场前几秒锁定俯视构图，不自动巡视（也利于截图验证）
+let targetYaw=yaw, targetPitch=pitch;
+let dragging=false, lastX=0, lastY=0, idleT=0, userActive=0;
+
+function applyLook(){
+  const dir=new THREE.Vector3(
+    Math.sin(yaw)*Math.cos(pitch),
+    Math.sin(pitch),
+    Math.cos(yaw)*Math.cos(pitch)
+  );
+  camera.lookAt(camera.position.clone().add(dir));
+}
+
+renderer.domElement.addEventListener('pointerdown',e=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; userActive=2.5; });
+addEventListener('pointerup',()=>dragging=false);
+addEventListener('pointermove',e=>{
+  if(!dragging)return;
+  targetYaw   -= (e.clientX-lastX)*0.0035;
+  targetPitch -= (e.clientY-lastY)*0.0035;
+  targetPitch = Math.max(-1.2, Math.min(0.5, targetPitch));
+  lastX=e.clientX; lastY=e.clientY; userActive=2.5;
+});
+// 滚轮前后挪一点（不锁视角，便于看细节）
+renderer.domElement.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const f=new THREE.Vector3(Math.sin(yaw),0,Math.cos(yaw)).multiplyScalar(-Math.sign(e.deltaY)*0.4);
+  const np=camera.position.clone().add(f);
+  // 限制在井道范围内，别穿墙（Z 留在顶层平台一带，不掉进井道）
+  np.x=Math.max(-2.4,Math.min(2.4,np.x));
+  np.z=Math.max(flight1TopZ+0.2,Math.min(topFrontZ+0.3,np.z));
+  camera.position.copy(np);
+  userActive=2.5;
+},{passive:false});
+
+/* ============================================================================
+   七、主循环：requestAnimationFrame 渲染 + resize 适配
+   ============================================================================ */
+const clock=new THREE.Clock();
+function tick(){
+  requestAnimationFrame(tick);
+  const dt=clock.getDelta();
+  userActive=Math.max(0,userActive-dt);
+
+  // 进场 3 秒后才开启「监控摄像头式」缓慢自动巡视；之前锁定俯视下行楼梯的标准构图
+  if(clock.elapsedTime>3) idleEnabled=true;
+  if(idleEnabled && userActive<=0){ idleT+=dt; targetYaw=Math.PI+Math.sin(idleT*0.16)*0.24; targetPitch=-0.40+Math.sin(idleT*0.12)*0.09; }
+
+  // 平滑插值，转动有惯性更高级
+  yaw  += (targetYaw-yaw)*Math.min(1,dt*6);
+  pitch+= (targetPitch-pitch)*Math.min(1,dt*6);
+  applyLook();
+
+  // 应急灯轻微呼吸闪烁（SCP 失效感），但幅度小不破坏明亮
+  emLight.intensity=0.5+Math.sin(clock.elapsedTime*4.0)*0.12+Math.random()*0.04;
+  vignettePass.uniforms.time.value=clock.elapsedTime;
+
+  composer.render();
+}
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+  composer.setSize(innerWidth,innerHeight);
+});
+
+tick();
+</script>
+</body>
+</html>

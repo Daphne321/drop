@@ -581,7 +581,7 @@ function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDel
   // 醒来时相机从床上低视角升起到站立
   const ty=(phase==='wake')?BED_EYE:EYE;camY+=(ty-camY)*Math.min(dt*2,1);
   // 地震晃动
-  let tg=phase==='quake'?0.4:0;tg*=moving?1.4:0.7;shake+=(tg-shake)*Math.min(dt*4,1);const s=shake;
+  let tg=phase==='quake'?0.22:0;tg*=moving?1.4:0.7;shake+=(tg-shake)*Math.min(dt*4,1);const s=shake;
   camera.position.set(player.x+Math.sin(t*37)*0.05*s,camY+Math.cos(t*43)*0.045*s,player.z+Math.sin(t*29)*0.04*s);
   camera.rotation.order='YXZ';camera.rotation.y=yaw+Math.cos(t*27)*0.015*s;camera.rotation.x=pitch+Math.sin(t*31)*0.015*s;camera.rotation.z=Math.sin(t*53)*0.04*s;
   // 灯/碎块

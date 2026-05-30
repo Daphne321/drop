@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>双人床 · SCP 收容失效风格 · 程序化测试</title>
+<style>
+  /* ---------- 页面基础：铺满全屏、纯前端、无外部依赖 ---------- */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #b9bcbe; }
+  #app { position: fixed; inset: 0; }
+  /* 左下角小提示，方便测试时确认场景已渲染 */
+  #hint {
+    position: fixed; left: 12px; bottom: 12px; z-index: 10;
+    font: 12px/1.5 -apple-system, "PingFang SC", sans-serif;
+    color: #2a2c2e; background: rgba(255,255,255,0.55);
+    padding: 6px 10px; border-radius: 6px; pointer-events: none;
+    letter-spacing: .3px;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="hint">双人床 · 程序化几何 · 鼠标拖拽看 / 滚轮缩放</div>
+
+<!-- ============================================================
+     importmap：从 jsDelivr 引入 three@0.160.0 本体 + addons。
+     说明：CDN 仅用于本测试文件；正式集成进游戏时按主项目已有
+     的 importmap 复用同一份 three，不要重复引入。
+============================================================ -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+/* ============================================================
+   一、程序化纹理工厂（Canvas → CanvasTexture）
+   ------------------------------------------------------------
+   思路：8MB 红线不准导入任何图片，所以所有"脏旧布料/木纹/蒙尘"
+   的质感都靠 <canvas> 现画。可以把每个函数想象成一台"小印刷机"：
+   往一张空白画布上一层层叠噪点、污渍、纤维、裂纹，最后把这张画布
+   交给 Three.js 当贴图用。
+   - 颜色贴图(map)：决定"看起来什么花色"
+   - 法线贴图(normalMap)：用蓝紫色编码表面凹凸，让平面在光照下
+     产生"假的"凹凸阴影，不增加任何多边形就有布料褶皱/木纹起伏感
+============================================================ */
+
+// 工具：建一张指定边长的离屏画布，返回 {canvas, ctx}
+function makeCanvas(size) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  return { canvas, ctx: canvas.getContext('2d') };
+}
+
+// 工具：把画布包成 Three 纹理，并设置成可平铺、各向异性更清晰
+function toTexture(canvas, repeat = 1) {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeat, repeat);
+  tex.anisotropy = 8;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// 值噪声：在画布上随机撒点并叠加，做"颗粒/蒙尘"基底
+function paintNoise(ctx, size, baseRGB, amount, alpha) {
+  const img = ctx.getImageData(0, 0, size, size);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    // 在基础灰上叠 ±amount 的随机扰动，模拟布料/墙面的不均匀
+    const n = (Math.random() - 0.5) * 2 * amount;
+    d[i]   = THREE.MathUtils.clamp(baseRGB[0] + n, 0, 255);
+    d[i+1] = THREE.MathUtils.clamp(baseRGB[1] + n, 0, 255);
+    d[i+2] = THREE.MathUtils.clamp(baseRGB[2] + n, 0, 255);
+    d[i+3] = alpha;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// 随机污渍/水痕：半透明深色软斑点，叠在任何贴图上做"脏旧"
+function paintStains(ctx, size, count, maxR, color) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = maxR * (0.3 + Math.random() * 0.7);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, color.replace('A', (0.10 + Math.random() * 0.18).toFixed(2)));
+    g.addColorStop(1, color.replace('A', '0'));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+/* ---------- 1) 旧床单/被套布料：颜色 + 法线 ----------
+   关键：法线贴图里画很多"长条状柔和明暗"= 布料纤维的细褶，
+   让被子表面除了大块体积褶皱，还有细腻的布纹反光。 */
+function fabricTextures(size, baseRGB, dirty) {
+  // --- 颜色贴图 ---
+  const { canvas: cMap, ctx: mctx } = makeCanvas(size);
+  mctx.fillStyle = `rgb(${baseRGB.join(',')})`;
+  mctx.fillRect(0, 0, size, size);
+  paintNoise(mctx, size, baseRGB, 14, 255);
+  // 织物经纬：极淡的横竖细线，远看是布的肌理
+  mctx.globalAlpha = 0.06;
+  for (let i = 0; i < size; i += 3) {
+    mctx.strokeStyle = i % 6 === 0 ? '#ffffff' : '#000000';
+    mctx.beginPath(); mctx.moveTo(0, i); mctx.lineTo(size, i); mctx.stroke();
+    mctx.beginPath(); mctx.moveTo(i, 0); mctx.lineTo(i, size); mctx.stroke();
+  }
+  mctx.globalAlpha = 1;
+  // 蒙尘 + 污渍：dirty 越大越脏
+  paintStains(mctx, size, 18 * dirty, size * 0.18, 'rgba(60,55,45,A)');
+  paintStains(mctx, size, 6 * dirty, size * 0.30, 'rgba(40,42,46,A)');
+
+  // --- 法线贴图 ---
+  // 先填中性法线（朝上的蓝色 128,128,255），再叠纤维明暗
+  const { canvas: cNrm, ctx: nctx } = makeCanvas(size);
+  nctx.fillStyle = 'rgb(128,128,255)';
+  nctx.fillRect(0, 0, size, size);
+  // 用很多随机方向的细线条 + 模糊，制造布料起绒的微凹凸
+  nctx.lineWidth = 1.4;
+  for (let i = 0; i < size * 1.6; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const len = 6 + Math.random() * 18;
+    const ang = Math.random() * Math.PI;
+    // 偏红=朝右，偏绿=朝上，做出有方向的褶
+    const shade = Math.random() > 0.5 ? 'rgba(150,150,255,0.5)' : 'rgba(106,106,255,0.5)';
+    nctx.strokeStyle = shade;
+    nctx.beginPath();
+    nctx.moveTo(x, y);
+    nctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    nctx.stroke();
+  }
+  return {
+    map: toTexture(cMap, 2),
+    normalMap: toTexture(cNrm, 2),
+  };
+}
+
+/* ---------- 2) 深色旧木：床架/床头板 ---------- */
+function woodTextures(size) {
+  const { canvas: cMap, ctx } = makeCanvas(size);
+  // 底色：深胡桃木
+  ctx.fillStyle = '#3a2a1d';
+  ctx.fillRect(0, 0, size, size);
+  // 木纹：沿纵向画许多深浅交替的弯曲长条
+  for (let i = 0; i < 60; i++) {
+    const x = (i / 60) * size + (Math.random() - 0.5) * 6;
+    const dark = Math.random() > 0.5;
+    ctx.strokeStyle = dark ? 'rgba(25,16,9,0.55)' : 'rgba(92,68,46,0.45)';
+    ctx.lineWidth = 1 + Math.random() * 3;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    // 用二次贝塞尔让纹理略弯曲，像真木头
+    ctx.quadraticCurveTo(x + (Math.random() - 0.5) * 30, size / 2, x + (Math.random() - 0.5) * 14, size);
+    ctx.stroke();
+  }
+  // 蒙尘 + 磨损斑
+  paintStains(ctx, size, 16, size * 0.12, 'rgba(20,15,10,A)');
+  paintStains(ctx, size, 8, size * 0.10, 'rgba(150,140,120,A)'); // 灰尘高光斑
+
+  // 木头法线：沿木纹方向的细沟
+  const { canvas: cNrm, ctx: nctx } = makeCanvas(size);
+  nctx.fillStyle = 'rgb(128,128,255)';
+  nctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < 80; i++) {
+    const x = Math.random() * size;
+    nctx.strokeStyle = Math.random() > 0.5 ? 'rgba(150,128,255,0.45)' : 'rgba(106,128,255,0.45)';
+    nctx.lineWidth = 1 + Math.random() * 2;
+    nctx.beginPath(); nctx.moveTo(x, 0);
+    nctx.quadraticCurveTo(x + 8, size / 2, x, size); nctx.stroke();
+  }
+  return {
+    map: toTexture(cMap, 1),
+    normalMap: toTexture(cNrm, 1),
+  };
+}
+
+/* ---------- 3) 灰白破败墙面/地面 ---------- */
+function plasterTextures(size, baseRGB, crackCount) {
+  const { canvas: cMap, ctx } = makeCanvas(size);
+  ctx.fillStyle = `rgb(${baseRGB.join(',')})`;
+  ctx.fillRect(0, 0, size, size);
+  paintNoise(ctx, size, baseRGB, 18, 255);
+  // 大块脱漆/水渍
+  paintStains(ctx, size, 22, size * 0.22, 'rgba(70,72,70,A)');
+  paintStains(ctx, size, 10, size * 0.16, 'rgba(120,115,100,A)');
+  // 裂纹：从随机点出发的分叉折线
+  ctx.strokeStyle = 'rgba(40,40,42,0.5)';
+  for (let c = 0; c < crackCount; c++) {
+    let x = Math.random() * size, y = Math.random() * size;
+    ctx.lineWidth = 0.6 + Math.random() * 1.4;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    const steps = 6 + Math.floor(Math.random() * 10);
+    for (let s = 0; s < steps; s++) {
+      x += (Math.random() - 0.5) * size * 0.12;
+      y += (Math.random() - 0.5) * size * 0.12;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  return { map: toTexture(cMap, 1) };
+}
+
+/* ============================================================
+   二、渲染器 / 场景 / 相机 / 后处理
+============================================================ */
+const app = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// 色调映射：让高光不过曝、整体偏亮（SCP 灵魂 = 明亮灰白）
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;     // > 1.2，画面整体提亮
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xbfc2c4); // 冷灰背景，不是黑
+scene.fog = new THREE.FogExp2(0xc2c5c7, 0.022); // 极淡灰雾营造蒙尘空气感
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 100);
+// 第一人称俯视：站在床尾偏上，略低头看整张床
+camera.position.set(0, 2.35, 2.05);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.55, 0); // 看向床面中心
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 1.0;
+controls.maxDistance = 6.0;
+controls.maxPolarAngle = Math.PI * 0.92;
+
+/* ============================================================
+   三、灯光：明亮冷调环境 + 一束方向光投阴影 + 暖色台灯
+   ------------------------------------------------------------
+   设计原则（防"做成一团黑"）：
+   - 环境光强度 0.75（>0.7），保证最暗处也看得清细节
+   - 半球光给"天上冷、地上反弹暖"的自然过渡
+   - 方向光是主光，唯一投阴影，强度适中
+   - 台灯 PointLight 暖橙色，与冷灰环境形成冷暖对比，只点亮床头
+============================================================ */
+scene.add(new THREE.AmbientLight(0xdfe3e6, 0.9));
+
+const hemi = new THREE.HemisphereLight(0xeef2f5, 0x6a665e, 0.65);
+scene.add(hemi);
+
+// 右侧补光（无阴影）：抬高背光面亮度，避免床的远侧偏暗
+const fill = new THREE.DirectionalLight(0xeaf0f4, 0.45);
+fill.position.set(3.0, 3.5, 2.5);
+scene.add(fill);
+
+const keyLight = new THREE.DirectionalLight(0xf2f0ea, 1.15);
+keyLight.position.set(-3.5, 5.5, 3.0);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 20;
+keyLight.shadow.camera.left = -4;
+keyLight.shadow.camera.right = 4;
+keyLight.shadow.camera.top = 4;
+keyLight.shadow.camera.bottom = -4;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.02;
+scene.add(keyLight);
+
+// 暖色台灯灯泡（床头左侧）：冷暖对比的灵魂
+const lampLight = new THREE.PointLight(0xffd9a0, 9, 4.2, 2.0);
+lampLight.position.set(-1.25, 0.95, -0.78);
+lampLight.castShadow = true;
+lampLight.shadow.mapSize.set(1024, 1024);
+lampLight.shadow.bias = -0.001;
+scene.add(lampLight);
+
+/* ============================================================
+   四、材质准备（全部基于程序化纹理 + PBR）
+============================================================ */
+// 被子：脏旧米白布
+const quiltTex = fabricTextures(512, [206, 202, 190], 1.0);
+const quiltMat = new THREE.MeshStandardMaterial({
+  map: quiltTex.map, normalMap: quiltTex.normalMap,
+  normalScale: new THREE.Vector2(1.4, 1.4),
+  roughness: 0.95, metalness: 0.0,
+});
+// 床单（露出的床垫顶面）：略白
+const sheetTex = fabricTextures(512, [216, 214, 206], 0.7);
+const sheetMat = new THREE.MeshStandardMaterial({
+  map: sheetTex.map, normalMap: sheetTex.normalMap,
+  normalScale: new THREE.Vector2(0.8, 0.8),
+  roughness: 0.97, metalness: 0.0,
+});
+// 枕头：偏暖灰白
+const pillowTex = fabricTextures(384, [222, 218, 208], 0.6);
+const pillowMat = new THREE.MeshStandardMaterial({
+  map: pillowTex.map, normalMap: pillowTex.normalMap,
+  normalScale: new THREE.Vector2(1.0, 1.0),
+  roughness: 0.92, metalness: 0.0,
+});
+// 床垫侧面：发黄旧布
+const mattressTex = fabricTextures(512, [198, 192, 176], 0.9);
+const mattressMat = new THREE.MeshStandardMaterial({
+  map: mattressTex.map, normalMap: mattressTex.normalMap,
+  normalScale: new THREE.Vector2(0.6, 0.6),
+  roughness: 0.96, metalness: 0.0,
+});
+// 木床架
+const woodTex = woodTextures(512);
+const woodMat = new THREE.MeshStandardMaterial({
+  map: woodTex.map, normalMap: woodTex.normalMap,
+  normalScale: new THREE.Vector2(0.8, 0.8),
+  roughness: 0.78, metalness: 0.05,
+});
+// 地面 / 墙面（灰白破败）
+const floorTex = plasterTextures(512, [150, 150, 150], 16);
+const floorMat = new THREE.MeshStandardMaterial({
+  map: floorTex.map, roughness: 0.96, metalness: 0.0,
+});
+const wallTex = plasterTextures(512, [192, 192, 190], 20);
+const wallMat = new THREE.MeshStandardMaterial({
+  map: wallTex.map, roughness: 0.98, metalness: 0.0,
+});
+
+/* ============================================================
+   五、搭建房间（地 + 两面墙）——给床一个 SCP 空间感
+============================================================ */
+const room = new THREE.Group();
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = 0;
+floor.receiveShadow = true;
+room.add(floor);
+
+const backWall = new THREE.Mesh(new THREE.PlaneGeometry(12, 5), wallMat);
+backWall.position.set(0, 2.5, -2.6);
+backWall.receiveShadow = true;
+room.add(backWall);
+
+const leftWall = new THREE.Mesh(new THREE.PlaneGeometry(12, 5), wallMat);
+leftWall.rotation.y = Math.PI / 2;
+leftWall.position.set(-3.4, 2.5, 0);
+leftWall.receiveShadow = true;
+room.add(leftWall);
+
+scene.add(room);
+
+/* ============================================================
+   六、双人床本体
+   ------------------------------------------------------------
+   尺寸约定（米）：床面 2.0(长) x 1.6(宽)。
+   床用一个 Group 装起来，方便整体移动/集成。
+   坐标系：x 左右，y 上下，z 前后（z 负 = 床头方向）。
+============================================================ */
+const bed = new THREE.Group();
+
+// 小工具：快速造一个投/收阴影的 Box
+function box(w, h, d, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+const BED_W = 1.6;   // 宽（x）
+const BED_L = 2.0;   // 长（z）
+const LEG_H = 0.28;  // 床腿高度（床板离地）
+
+// ---------- 6.1 床腿（四根深木方腿）----------
+const legGeoSize = [0.1, LEG_H, 0.1];
+const legPos = [
+  [ BED_W/2 - 0.08, LEG_H/2,  BED_L/2 - 0.08],
+  [-BED_W/2 + 0.08, LEG_H/2,  BED_L/2 - 0.08],
+  [ BED_W/2 - 0.08, LEG_H/2, -BED_L/2 + 0.08],
+  [-BED_W/2 + 0.08, LEG_H/2, -BED_L/2 + 0.08],
+];
+legPos.forEach(p => {
+  const leg = box(...legGeoSize, woodMat);
+  leg.position.set(...p);
+  bed.add(leg);
+});
+
+// ---------- 6.2 床框（一圈木边框）----------
+const frameY = LEG_H + 0.06;
+const frameT = 0.12; // 框厚度
+// 长边两条
+[BED_W/2 - 0.04, -BED_W/2 + 0.04].forEach(x => {
+  const rail = box(0.08, frameT, BED_L, woodMat);
+  rail.position.set(x, frameY, 0);
+  bed.add(rail);
+});
+// 短边两条
+[BED_L/2 - 0.04, -BED_L/2 + 0.04].forEach(z => {
+  const rail = box(BED_W, frameT, 0.08, woodMat);
+  rail.position.set(0, frameY, z);
+  bed.add(rail);
+});
+
+// ---------- 6.3 床头板（带竖条装饰的高背板）----------
+const headboardGroup = new THREE.Group();
+const headboard = box(BED_W + 0.06, 0.75, 0.07, woodMat);
+headboard.position.set(0, frameY + 0.42, -BED_L/2 - 0.02);
+headboardGroup.add(headboard);
+// 床头板上的竖向木条装饰（5 根），增加几何细节
+for (let i = 0; i < 5; i++) {
+  const slat = box(0.06, 0.6, 0.03, woodMat);
+  slat.position.set(-0.6 + i * 0.3, frameY + 0.42, -BED_L/2 - 0.06);
+  headboardGroup.add(slat);
+}
+// 顶部横木压条
+const headTop = box(BED_W + 0.12, 0.1, 0.1, woodMat);
+headTop.position.set(0, frameY + 0.8, -BED_L/2 - 0.03);
+headboardGroup.add(headTop);
+bed.add(headboardGroup);
+
+// 床尾矮板
+const footboard = box(BED_W + 0.04, 0.32, 0.07, woodMat);
+footboard.position.set(0, frameY + 0.2, BED_L/2 + 0.02);
+bed.add(footboard);
+
+// ---------- 6.4 床垫（厚实，四角微圆靠多段拼）----------
+const MAT_Y = frameY + 0.06;     // 床垫底面
+const MAT_H = 0.22;              // 床垫厚度
+const mattress = box(BED_W - 0.02, MAT_H, BED_L - 0.02, mattressMat);
+mattress.position.set(0, MAT_Y + MAT_H/2, 0);
+bed.add(mattress);
+// 床垫顶面铺一层床单（露在被子上方一截，靠枕头那侧）
+const sheet = box(BED_W - 0.04, 0.03, BED_L - 0.04, sheetMat);
+sheet.position.set(0, MAT_Y + MAT_H + 0.015, 0);
+bed.add(sheet);
+
+const BLANKET_TOP_Y = MAT_Y + MAT_H + 0.03; // 被子大致铺在这个高度往上堆
+
+/* ============================================================
+   6.5 ★ 被子（核心）★
+   ------------------------------------------------------------
+   设计要点（这是被批"太抽象"后重做的核心）：
+   绝不能用几块平整白方块！蓬松被子的体积感来自：
+   (1) 很多大小不一、互相错落叠压的 box；
+   (2) 每个 box 都随机倾斜（rotation 三轴都给小角度），
+       让边缘高低起伏 = 褶皱；
+   (3) 按"主体堆"+"褶皱条"+"卷边垄"三类分层堆叠，
+       像真被子被人胡乱掀开后留下的隆起和沟壑。
+   把整堆被子放进一个子 Group，方便统一定位。
+============================================================ */
+const blanket = new THREE.Group();
+
+// 被子覆盖的区域：从床中部盖到床尾（床头露出枕头与床单）
+const COVER_Z0 = -0.35;          // 被子上边界（靠枕头侧）
+const COVER_Z1 = BED_L/2 - 0.06; // 被子下边界（床尾）
+const coverLen = COVER_Z1 - COVER_Z0;
+
+// 伪随机：固定种子让每次刷新形状一致，方便比对（线性同余）
+let seed = 20260530;
+function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+function rndRange(a, b) { return a + rnd() * (b - a); }
+
+// --- (A) 被子主体大块：4 层逐渐变小的圆角隆起，堆出整体厚度 ---
+//     用稍扁的 box 叠起来，越往上越小越窄，形成中间高、两边塌的"被山" ---
+const mainHumps = [
+  { w: BED_W - 0.06, h: 0.16, dz: 0.00, lift: 0.00 },
+  { w: BED_W - 0.20, h: 0.14, dz: 0.05, lift: 0.10 },
+  { w: BED_W - 0.42, h: 0.12, dz: -0.04, lift: 0.19 },
+];
+mainHumps.forEach((hp, i) => {
+  const m = box(hp.w, hp.h, coverLen * (1 - i * 0.06), quiltMat);
+  m.position.set(
+    rndRange(-0.04, 0.04),
+    BLANKET_TOP_Y + hp.h/2 + hp.lift,
+    (COVER_Z0 + COVER_Z1) / 2 + hp.dz
+  );
+  // 整体轻微倾斜，被子不是水平铺平的
+  m.rotation.set(rndRange(-0.04, 0.02), rndRange(-0.03, 0.03), rndRange(-0.05, 0.05));
+  blanket.add(m);
+});
+
+// --- (B) 褶皱垄：沿不同方向斜置的细长 box，堆成一道道隆起的褶 ---
+//     这是"褶皱感"的主力——大小不一、错落、斜置 ---
+const NUM_RIDGES = 26;
+for (let i = 0; i < NUM_RIDGES; i++) {
+  // 在被子覆盖范围内随机撒位置
+  const px = rndRange(-BED_W/2 + 0.12, BED_W/2 - 0.12);
+  const pz = rndRange(COVER_Z0 + 0.1, COVER_Z1 - 0.08);
+  // 离中线越近堆得越高（中间隆起、边缘塌陷）
+  const centerFactor = 1 - Math.min(1, Math.abs(px) / (BED_W/2));
+  const baseLift = BLANKET_TOP_Y + 0.05 + centerFactor * rndRange(0.06, 0.22);
+
+  // 褶皱条：细长，长度/粗细/高度都随机，绝不雷同
+  const len = rndRange(0.28, 0.85);
+  const wid = rndRange(0.06, 0.17);
+  const hei = rndRange(0.06, 0.18);
+  const ridge = box(wid, hei, len, quiltMat);
+  ridge.position.set(px, baseLift, pz);
+  // ★ 三轴随机倾斜 = 褶皱起伏的关键
+  ridge.rotation.set(
+    rndRange(-0.35, 0.35),
+    rndRange(-1.1, 1.1),      // 绕竖轴大幅旋转，让褶皱朝向各异
+    rndRange(-0.4, 0.4)
+  );
+  blanket.add(ridge);
+}
+
+// --- (C) 小褶碎块：一堆更小的方块填进沟壑，消除"块感"、增加细碎起伏 ---
+const NUM_CHIPS = 40;
+for (let i = 0; i < NUM_CHIPS; i++) {
+  const px = rndRange(-BED_W/2 + 0.08, BED_W/2 - 0.08);
+  const pz = rndRange(COVER_Z0 + 0.05, COVER_Z1 - 0.04);
+  const centerFactor = 1 - Math.min(1, Math.abs(px) / (BED_W/2));
+  const lift = BLANKET_TOP_Y + 0.04 + centerFactor * rndRange(0.02, 0.18) + rndRange(0, 0.06);
+  const s = rndRange(0.07, 0.16);
+  const chip = box(s, rndRange(0.05, 0.11), s * rndRange(0.8, 1.6), quiltMat);
+  chip.position.set(px, lift, pz);
+  chip.rotation.set(rndRange(-0.6, 0.6), rndRange(-1.5, 1.5), rndRange(-0.6, 0.6));
+  blanket.add(chip);
+}
+
+// --- (D) 被子翻卷的厚边（床尾那侧被掀起的卷边）---
+//     沿床尾横一道粗垄，再用几段错位 box 模拟卷起的厚度 ---
+for (let i = 0; i < 7; i++) {
+  const seg = box(rndRange(0.18, 0.32), rndRange(0.12, 0.2), rndRange(0.16, 0.26), quiltMat);
+  seg.position.set(
+    -BED_W/2 + 0.18 + i * (BED_W - 0.36) / 6,
+    BLANKET_TOP_Y + rndRange(0.05, 0.12),
+    COVER_Z1 - rndRange(0.02, 0.1)
+  );
+  seg.rotation.set(rndRange(-0.5, 0.1), rndRange(-0.5, 0.5), rndRange(-0.3, 0.3));
+  blanket.add(seg);
+}
+
+// --- (E) 被子垂到床两侧的下摆（侧面挂下来的布）---
+[-1, 1].forEach(side => {
+  for (let i = 0; i < 6; i++) {
+    const drape = box(rndRange(0.05, 0.09), rndRange(0.14, 0.26), rndRange(0.18, 0.34), quiltMat);
+    drape.position.set(
+      side * (BED_W/2 - 0.02),
+      BLANKET_TOP_Y - rndRange(0.02, 0.12),
+      rndRange(COVER_Z0 + 0.15, COVER_Z1 - 0.1)
+    );
+    drape.rotation.set(rndRange(-0.2, 0.2), rndRange(-0.3, 0.3), side * rndRange(0.05, 0.25));
+    blanket.add(drape);
+  }
+});
+
+bed.add(blanket);
+
+/* ============================================================
+   6.6 枕头（两个，蓬松，靠床头）
+   ------------------------------------------------------------
+   每个枕头也不是一块平方块：用一个主块 + 几个小块堆出鼓胀感，
+   并整体微倾、微陷，像被压过的旧枕头。
+============================================================ */
+function makePillow(cx) {
+  const g = new THREE.Group();
+  // 主体：宽扁圆角块
+  const core = box(0.6, 0.16, 0.42, pillowMat);
+  core.position.set(0, 0, 0);
+  core.rotation.set(rndRange(-0.05, 0.05), rndRange(-0.1, 0.1), rndRange(-0.04, 0.04));
+  g.add(core);
+  // 四角鼓起的小块，让枕头边缘饱满
+  const corners = [[-0.22,0.14],[0.22,0.14],[-0.22,-0.14],[0.22,-0.14]];
+  corners.forEach(([dx, dz]) => {
+    const c = box(0.2, 0.13, 0.18, pillowMat);
+    c.position.set(dx, rndRange(-0.01, 0.02), dz);
+    c.rotation.set(rndRange(-0.2, 0.2), rndRange(-0.3, 0.3), rndRange(-0.2, 0.2));
+    g.add(c);
+  });
+  // 中间被头压出的凹陷感：放一个略低的小块
+  const dent = box(0.26, 0.1, 0.2, pillowMat);
+  dent.position.set(0, -0.03, 0);
+  g.add(dent);
+  // 整个枕头摆到床头、略微歪斜
+  g.position.set(cx, MAT_Y + MAT_H + 0.11, -BED_L/2 + 0.34);
+  g.rotation.y = rndRange(-0.12, 0.12);
+  return g;
+}
+bed.add(makePillow(-0.38));
+bed.add(makePillow(0.38));
+
+/* ============================================================
+   6.7 床头台灯（暖光源的实体）+ 床头柜
+============================================================ */
+const nightstand = new THREE.Group();
+// 床头柜柜体
+const cabinet = box(0.42, 0.5, 0.4, woodMat);
+cabinet.position.set(-1.25, 0.25, -0.78);
+nightstand.add(cabinet);
+// 抽屉缝（用一条细深色 box 假装）
+const drawerLine = box(0.43, 0.01, 0.005, new THREE.MeshStandardMaterial({ color: 0x1a120b, roughness: 1 }));
+drawerLine.position.set(-1.25, 0.36, -0.58);
+nightstand.add(drawerLine);
+
+// 台灯：底座（圆柱）+ 灯杆 + 灯罩（锥台）
+const lampMetal = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.5, metalness: 0.6 });
+const lampBase = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.04, 20), lampMetal);
+lampBase.position.set(-1.25, 0.52, -0.78); lampBase.castShadow = true;
+nightstand.add(lampBase);
+const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.28, 12), lampMetal);
+lampPole.position.set(-1.25, 0.66, -0.78); lampPole.castShadow = true;
+nightstand.add(lampPole);
+// 灯罩：用开口锥台，内壁发光感靠材质 emissive
+const shadeMat = new THREE.MeshStandardMaterial({
+  color: 0xe8d8b8, emissive: 0xffd9a0, emissiveIntensity: 0.9,
+  roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide,
+});
+const lampShade = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.16, 0.18, 24, 1, true), shadeMat);
+lampShade.position.set(-1.25, 0.86, -0.78); lampShade.castShadow = true;
+nightstand.add(lampShade);
+// 灯泡发光小球（让灯罩内部有亮点）
+const bulb = new THREE.Mesh(
+  new THREE.SphereGeometry(0.04, 12, 12),
+  new THREE.MeshBasicMaterial({ color: 0xfff0d0 })
+);
+bulb.position.copy(lampLight.position);
+nightstand.add(bulb);
+scene.add(nightstand);
+
+scene.add(bed);
+
+/* ============================================================
+   6.8 破败氛围：地面碎屑 + 空气浮尘粒子
+============================================================ */
+// 地面碎砖块/灰泥碎片
+const debrisMat = new THREE.MeshStandardMaterial({ color: 0xbdbab2, roughness: 1 });
+for (let i = 0; i < 30; i++) {
+  const s = rndRange(0.03, 0.1);
+  const d = box(s, s * rndRange(0.4, 0.9), s * rndRange(0.6, 1.4), debrisMat);
+  d.position.set(rndRange(-3, 3), s * 0.3, rndRange(-2, 3));
+  d.rotation.set(rndRange(0, 3.14), rndRange(0, 3.14), rndRange(0, 3.14));
+  // 别压到床下中心
+  if (Math.abs(d.position.x) < 1 && Math.abs(d.position.z) < 1.1) d.position.x += 2.2;
+  scene.add(d);
+}
+
+// 空气浮尘：Points 粒子，在灯光里缓缓飘，强化"蒙尘"破败感
+const dustCount = 600;
+const dustGeo = new THREE.BufferGeometry();
+const dustPos = new Float32Array(dustCount * 3);
+for (let i = 0; i < dustCount; i++) {
+  dustPos[i*3]   = rndRange(-3.2, 3.2);
+  dustPos[i*3+1] = rndRange(0.1, 3.2);
+  dustPos[i*3+2] = rndRange(-2.4, 2.8);
+}
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+const dustMat = new THREE.PointsMaterial({
+  color: 0xffffff, size: 0.012, transparent: true, opacity: 0.35,
+  depthWrite: false, sizeAttenuation: true,
+});
+const dust = new THREE.Points(dustGeo, dustMat);
+scene.add(dust);
+
+/* ============================================================
+   七、后处理（克制！只加轻 Bloom + 轻暗角，绝不压黑画面）
+============================================================ */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+// 轻微 Bloom：只让台灯/灯罩这种高光区微微发光，阈值高=只挑最亮的
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.26,   // 强度（轻）
+  0.55,   // 半径
+  0.9     // 阈值高 → 只有很亮的地方才发光，不会糊整张图
+);
+composer.addPass(bloom);
+
+// 极轻暗角：四角略压暗聚焦视线，但中心保持明亮（mult 接近 1）
+const vignetteShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    offset: { value: 1.1 },   // 越大暗角范围越靠外（更轻）
+    darkness: { value: 0.55 },// 暗角最深处的压暗程度（<1，温和）
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float offset;
+    uniform float darkness;
+    varying vec2 vUv;
+    void main(){
+      vec4 color = texture2D(tDiffuse, vUv);
+      vec2 uv = (vUv - 0.5) * offset;
+      // 距中心越远压得越暗，但 mix 到 darkness（0.55）为止，绝不全黑
+      float vig = smoothstep(0.8, 0.2, dot(uv, uv));
+      color.rgb *= mix(darkness, 1.0, vig);
+      gl_FragColor = color;
+    }
+  `,
+};
+const vignettePass = new ShaderPass(vignetteShader);
+composer.addPass(vignettePass);
+
+/* ============================================================
+   八、自适应窗口 + 渲染循环
+============================================================ */
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 浮尘缓缓上飘 + 轻微左右漂，越界则从底部回收
+  const arr = dustGeo.attributes.position.array;
+  for (let i = 0; i < dustCount; i++) {
+    arr[i*3+1] += 0.0008;                          // 上飘
+    arr[i*3]   += Math.sin(t * 0.3 + i) * 0.0003;  // 横向轻漂
+    if (arr[i*3+1] > 3.3) arr[i*3+1] = 0.1;        // 回收到底部
+  }
+  dustGeo.attributes.position.needsUpdate = true;
+
+  // 台灯极轻微"老旧闪烁"，强化破败但不刺眼
+  lampLight.intensity = 9 + Math.sin(t * 7.0) * 0.4 + Math.sin(t * 23.0) * 0.2;
+
+  controls.update();
+  composer.render();
+}
+animate();
+
+// 暴露到 window，方便测试时在控制台查对象/排查
+window.__bedScene = { scene, camera, renderer, bed, blanket };
+</script>
+</body>
+</html>

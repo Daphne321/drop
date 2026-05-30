@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>余震·DROP — 地震瓦砾测试场</title>
+<style>
+  /* 整个页面铺满，背景给一个冷灰色，万一 WebGL 没起来也不是纯黑 */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9a9a98; }
+  #info {
+    position: fixed; left: 12px; top: 10px; z-index: 10;
+    font: 12px/1.5 -apple-system, "PingFang SC", sans-serif;
+    color: #2a2a2a; background: rgba(255,255,255,0.55);
+    padding: 6px 10px; border-radius: 6px; pointer-events: none;
+    letter-spacing: .2px;
+  }
+  #err {
+    position: fixed; left: 12px; bottom: 12px; z-index: 20;
+    font: 12px/1.4 monospace; color: #b00; background: rgba(255,255,255,.9);
+    padding: 6px 10px; border-radius: 6px; display: none; max-width: 80vw;
+  }
+</style>
+</head>
+<body>
+<div id="info">余震·DROP 瓦砾测试 · 拖拽旋转 / 滚轮缩放 · 第一人称俯视一片狼藉</div>
+<div id="err"></div>
+
+<!-- importmap：从 jsdelivr 引入 three 主体 + addons，仅测试用，集成进主游戏时改成项目自己的依赖 -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+// 出错时把信息打到屏幕上，方便排查（而不是默默白屏）
+function showErr(msg){ const e=document.getElementById('err'); e.style.display='block'; e.textContent='ERR: '+msg; }
+window.addEventListener('error', e => showErr(e.message));
+
+// ============================================================
+// 0. 程序化纹理工厂
+//    思路：8MB 红线下不许导入任何图片，所以所有“脏旧混凝土”的质感
+//    都靠 <canvas> 当画布、用代码画出来，再喂给 Three 当贴图。
+//    可以把 canvas 想象成一块“数字水泥抹板”——我们在上面手刷噪点、
+//    污渍、裂纹，刷完拍照（toDataURL 不需要，直接 CanvasTexture 引用）
+//    贴到几何体表面。
+// ============================================================
+
+// 工具：在 [a,b] 之间取随机数
+const rand = (a, b) => a + Math.random() * (b - a);
+// 工具：从数组里随机抽一个
+const pick = arr => arr[(Math.random() * arr.length) | 0];
+
+// 生成一块“脏旧混凝土”漫反射贴图。
+// baseHue/baseLight 控制底色（灰白基调），加噪点、骨料颗粒、污渍、裂纹。
+function makeConcreteTexture(size = 256, opts = {}) {
+  const base = opts.base || 200;          // 底色亮度（越大越白）
+  const grain = opts.grain || 26;         // 颗粒噪声强度
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  // 1) 底色：略带冷调的灰白
+  ctx.fillStyle = `rgb(${base},${base},${base - 4})`;
+  ctx.fillRect(0, 0, size, size);
+
+  // 2) 细密噪点（水泥砂浆的微观颗粒感）——逐像素加随机扰动
+  const img = ctx.getImageData(0, 0, size, size);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() - 0.5) * grain;
+    d[i] += n; d[i + 1] += n; d[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // 3) 骨料颗粒（混凝土里的小石子）——撒一堆深浅不一的小圆点
+  const aggCount = (size / 256) * 380;
+  for (let i = 0; i < aggCount; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = rand(0.6, 2.4);
+    const g = rand(0.55, 1.15);
+    const v = base * g | 0;
+    ctx.fillStyle = `rgba(${v},${v},${v - 3},${rand(0.3, 0.7)})`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
+  }
+
+  // 4) 污渍 / 水痕（破败感的关键）——几团半透明的暗斑
+  const stains = rand(3, 7) | 0;
+  for (let i = 0; i < stains; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const R = rand(size * 0.1, size * 0.35);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+    const dark = rand(0.55, 0.8);
+    g.addColorStop(0, `rgba(${base * dark | 0},${base * dark | 0},${base * dark * 0.95 | 0},${rand(0.12, 0.3)})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, R, 0, 6.283); ctx.fill();
+  }
+
+  // 5) 裂纹（地震破坏的标志）——画几条细的分叉黑线
+  const cracks = rand(2, 5) | 0;
+  ctx.strokeStyle = `rgba(40,40,42,${rand(0.4, 0.7)})`;
+  for (let i = 0; i < cracks; i++) {
+    let x = Math.random() * size, y = Math.random() * size;
+    ctx.lineWidth = rand(0.5, 1.6);
+    ctx.beginPath(); ctx.moveTo(x, y);
+    const segs = rand(4, 9) | 0;
+    let ang = Math.random() * 6.283;
+    for (let s = 0; s < segs; s++) {
+      ang += rand(-0.8, 0.8);
+      x += Math.cos(ang) * rand(8, 26);
+      y += Math.sin(ang) * rand(8, 26);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+// 由一张灰度高度信息生成“法线贴图”，让平面在光照下显出凹凸。
+// 原理：把混凝土颗粒/裂纹当成微小起伏，用相邻像素的明暗差推算表面朝向。
+// 类比：盲人摸墙，靠左右手感到的高低差，判断墙面是凸还是凹。
+function makeNormalTexture(size = 256, strength = 1.0) {
+  // 先画一张灰度高度图（噪声 + 一些裂缝凹陷）
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, size, size);
+  const img = ctx.getImageData(0, 0, size, size);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = 128 + (Math.random() - 0.5) * 90;
+    d[i] = d[i + 1] = d[i + 2] = n;
+  }
+  ctx.putImageData(img, 0, 0);
+  // 几道凹陷裂缝
+  ctx.strokeStyle = 'rgba(20,20,20,0.9)';
+  for (let i = 0; i < 4; i++) {
+    let x = Math.random() * size, y = Math.random() * size, ang = Math.random() * 6.283;
+    ctx.lineWidth = rand(1, 3); ctx.beginPath(); ctx.moveTo(x, y);
+    for (let s = 0; s < 6; s++) { ang += rand(-0.7, 0.7); x += Math.cos(ang) * 22; y += Math.sin(ang) * 22; ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+
+  // 用 Sobel 算子把高度图转成法线图
+  const h = ctx.getImageData(0, 0, size, size).data;
+  const out = ctx.createImageData(size, size);
+  const od = out.data;
+  const at = (x, y) => h[((y & (size - 1)) * size + (x & (size - 1))) * 4];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (at(x - 1, y) - at(x + 1, y)) / 255 * strength;
+      const dy = (at(x, y - 1) - at(x, y + 1)) / 255 * strength;
+      let nx = dx, ny = dy, nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len; ny /= len; nz /= len;
+      const idx = (y * size + x) * 4;
+      od[idx] = (nx * 0.5 + 0.5) * 255;
+      od[idx + 1] = (ny * 0.5 + 0.5) * 255;
+      od[idx + 2] = (nz * 0.5 + 0.5) * 255;
+      od[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(out, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+// 砖块贴图：红褐色砖体 + 灰白砂浆缝（碎砖用）
+function makeBrickTexture(size = 256) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#9c6b52'; ctx.fillRect(0, 0, size, size); // 砂浆底
+  const bw = size / 4, bh = size / 8;
+  for (let row = 0; row < 8; row++) {
+    const off = (row % 2) * bw / 2;
+    for (let col = -1; col < 5; col++) {
+      const x = col * bw + off + 2, y = row * bh + 2;
+      const r = rand(150, 185), g = rand(80, 110), b = rand(60, 85);
+      ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+      ctx.fillRect(x, y, bw - 4, bh - 4);
+    }
+  }
+  // 蒙尘噪点
+  const img = ctx.getImageData(0, 0, size, size); const d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - 0.5) * 30; d[i]+=n; d[i+1]+=n; d[i+2]+=n; }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// ============================================================
+// 1. 渲染器 / 场景 / 相机
+// ============================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// 明亮灰白的灵魂：ACESFilmic 调色 + 曝光拉高到 1.25
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+// 冷灰白背景 + 淡雾（远处灰蒙蒙，但绝不发黑）
+scene.background = new THREE.Color(0xb8bcbe);
+scene.fog = new THREE.Fog(0xb8bcbe, 22, 60);
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 200);
+// 第一人称俯视：站在约 1.7m 高，略低头看脚下这片狼藉
+camera.position.set(0, 4.2, 6.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.3, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.49; // 不让镜头穿到地面以下
+controls.minDistance = 2;
+controls.maxDistance = 18;
+
+// ============================================================
+// 2. 光照——明亮看得清是硬指标
+// ============================================================
+// 环境光：把整个场景的“地板亮度”抬高，强度 0.75（> 0.7 要求）
+scene.add(new THREE.AmbientLight(0xffffff, 0.78));
+// 半球光：天空冷白、地面暖灰，模拟阴天散射，让阴影里也不死黑
+scene.add(new THREE.HemisphereLight(0xdfe6ea, 0x6b6660, 0.55));
+// 主方向光：当太阳用，唯一投阴影的光源，给瓦砾打出立体感
+const sun = new THREE.DirectionalLight(0xfff4e6, 1.15);
+sun.position.set(8, 12, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 50;
+sun.shadow.camera.left = -18; sun.shadow.camera.right = 18;
+sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+// 补一盏冷调侧逆光，避免暗面糊成一坨
+const fill = new THREE.DirectionalLight(0xbfd0dd, 0.35);
+fill.position.set(-6, 5, -8);
+scene.add(fill);
+
+// ============================================================
+// 3. 地面——蒙尘的破裂地坪
+// ============================================================
+const groundTex = makeConcreteTexture(512, { base: 175, grain: 30 });
+groundTex.repeat.set(6, 6);
+const groundNormal = makeNormalTexture(512, 1.4);
+groundNormal.repeat.set(6, 6);
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({
+    map: groundTex, normalMap: groundNormal,
+    normalScale: new THREE.Vector2(0.8, 0.8),
+    roughness: 0.96, metalness: 0.02, color: 0xc6c6c4
+  })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ============================================================
+// 4. 共享材质池——纹理只生成几张，所有碎块复用，省内存
+//    多样性来自：随机缩放、随机旋转、随机挑材质，而不是每块重生成贴图。
+// ============================================================
+const concreteTexA = makeConcreteTexture(256, { base: 205, grain: 24 });
+const concreteTexB = makeConcreteTexture(256, { base: 185, grain: 32 });
+const concreteTexC = makeConcreteTexture(256, { base: 165, grain: 28 });
+const concNormal = makeNormalTexture(256, 1.6);
+const brickTex = makeBrickTexture(256);
+const brickNormal = makeNormalTexture(256, 1.2);
+
+function concreteMat(tex, tint) {
+  return new THREE.MeshStandardMaterial({
+    map: tex, normalMap: concNormal,
+    normalScale: new THREE.Vector2(0.9, 0.9),
+    roughness: rand(0.85, 0.98), metalness: 0.02,
+    color: tint || 0xffffff
+  });
+}
+const concMats = [
+  concreteMat(concreteTexA), concreteMat(concreteTexB), concreteMat(concreteTexC),
+  concreteMat(concreteTexA, 0xd8d4cc), concreteMat(concreteTexB, 0xcfc8be)
+];
+const brickMat = new THREE.MeshStandardMaterial({
+  map: brickTex, normalMap: brickNormal,
+  normalScale: new THREE.Vector2(0.7, 0.7),
+  roughness: 0.92, metalness: 0.03
+});
+// 钢筋材质：锈蚀金属，略带金属感
+const rebarMat = new THREE.MeshStandardMaterial({
+  color: 0x8a6650, roughness: 0.6, metalness: 0.65
+});
+
+// 钢筋几何体（细长圆柱），所有钢筋头复用一个
+const rebarGeo = new THREE.CylinderGeometry(0.025, 0.025, 1, 6);
+
+const rubble = new THREE.Group();
+scene.add(rubble);
+
+// 给一块碎块随机塞几根露出的钢筋头
+function addRebar(parentMesh, halfSize) {
+  const n = rand(0, 4) | 0;
+  for (let i = 0; i < n; i++) {
+    const bar = new THREE.Mesh(rebarGeo, rebarMat);
+    const len = rand(0.25, 0.9);
+    bar.scale.y = len;
+    // 从碎块某个面斜插出来
+    bar.position.set(
+      rand(-halfSize.x, halfSize.x),
+      halfSize.y * rand(0.2, 0.9),
+      rand(-halfSize.z, halfSize.z)
+    );
+    bar.rotation.set(rand(-1, 1), rand(0, 6.28), rand(-1, 1));
+    bar.castShadow = true;
+    parentMesh.add(bar);
+  }
+}
+
+// 造一个碎块：类型决定大致比例与材质
+//   slab  = 大块破碎水泥板（扁、大）
+//   chunk = 中块碎水泥/碎砖（接近立方）
+//   gravel= 小石砾（很小）
+function makeRubblePiece(type) {
+  let sx, sy, sz, mat, withRebar = false;
+  if (type === 'slab') {
+    sx = rand(1.4, 3.2); sy = rand(0.18, 0.4); sz = rand(1.0, 2.6);
+    mat = pick(concMats); withRebar = Math.random() < 0.7; // 水泥板常带钢筋
+  } else if (type === 'chunk') {
+    sx = rand(0.4, 1.0); sy = rand(0.3, 0.8); sz = rand(0.4, 1.0);
+    mat = Math.random() < 0.35 ? brickMat : pick(concMats);
+    withRebar = Math.random() < 0.25;
+  } else { // gravel
+    sx = rand(0.1, 0.3); sy = rand(0.08, 0.22); sz = rand(0.1, 0.3);
+    mat = Math.random() < 0.4 ? brickMat : pick(concMats);
+  }
+
+  // 用主 box 当主体，再贴 1-3 个小 box 制造“崩裂的棱角”，
+  // 避免规整方块——这是“绝不能是一堆一样白方块”的关键手段。
+  const geo = new THREE.BoxGeometry(sx, sy, sz);
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+
+  const subN = type === 'gravel' ? 0 : (rand(1, 4) | 0);
+  for (let i = 0; i < subN; i++) {
+    const ss = rand(0.2, 0.55);
+    const sub = new THREE.Mesh(
+      new THREE.BoxGeometry(sx * ss, sy * rand(0.4, 0.9), sz * ss),
+      mat
+    );
+    sub.position.set(
+      rand(-sx, sx) * 0.5, rand(-sy, sy) * 0.4, rand(-sz, sz) * 0.5
+    );
+    sub.rotation.set(rand(-0.4, 0.4), rand(0, 6.28), rand(-0.4, 0.4));
+    sub.castShadow = true; sub.receiveShadow = true;
+    m.add(sub);
+  }
+
+  if (withRebar) addRebar(m, { x: sx / 2, y: sy / 2, z: sz / 2 });
+  // 把最大半高记下来，方便落地时算埋入深度
+  m.userData.halfY = sy / 2;
+  return m;
+}
+
+// ============================================================
+// 5. 撒料——把碎块随机铺满地面，注意分布密度与“狼藉感”
+// ============================================================
+function place(piece, radiusMin, radiusMax) {
+  // 极坐标撒点：让碎块围绕脚下中心散开，中间略密、外圈略疏
+  const ang = Math.random() * 6.283;
+  const r = rand(radiusMin, radiusMax);
+  piece.position.set(Math.cos(ang) * r, 0, Math.sin(ang) * r);
+  // 随机旋转（三轴都转，制造横七竖八堆叠感）
+  piece.rotation.set(rand(-0.5, 0.5), Math.random() * 6.283, rand(-0.5, 0.5));
+  // 落地：让块的底部大致贴地，略微下陷模拟砸进地面
+  piece.position.y = piece.userData.halfY * rand(0.5, 0.95);
+  rubble.add(piece);
+}
+
+// 大水泥板：少而显眼
+for (let i = 0; i < 7; i++) place(makeRubblePiece('slab'), 1, 11);
+// 中块：主力，铺出层次
+for (let i = 0; i < 30; i++) place(makeRubblePiece('chunk'), 0.5, 12);
+// 小石砾：大量，填满缝隙，制造真实碎屑感
+for (let i = 0; i < 90; i++) place(makeRubblePiece('gravel'), 0.3, 13);
+
+// ============================================================
+// 6. 灰尘粒子——空气中悬浮的细尘，强化“刚塌完”的氛围
+//    用 Points + 程序化圆形贴图，量小不破红线。
+// ============================================================
+function makeDustTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const dustCount = 600;
+const dustGeo = new THREE.BufferGeometry();
+const dustPos = new Float32Array(dustCount * 3);
+for (let i = 0; i < dustCount; i++) {
+  dustPos[i*3]   = rand(-15, 15);
+  dustPos[i*3+1] = rand(0.1, 6);
+  dustPos[i*3+2] = rand(-15, 15);
+}
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
+  size: 0.06, map: makeDustTexture(), transparent: true,
+  opacity: 0.35, depthWrite: false, color: 0xeeeae2,
+  blending: THREE.NormalBlending
+}));
+scene.add(dust);
+
+// ============================================================
+// 7. 后处理——克制！轻 Bloom + 轻暗角，绝不把画面弄黑
+// ============================================================
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+// Bloom 调得很轻：阈值高（只有最亮处微微辉光）、强度小
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.18,  // strength：很弱
+  0.6,   // radius
+  0.85   // threshold：高阈值，避免整片发光
+);
+composer.addPass(bloom);
+
+// 暗角：自定义 shader，只在四角压一点点暗，强度极低，保证中心明亮
+const vignetteShader = {
+  uniforms: { tDiffuse: { value: null }, strength: { value: 0.32 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);} `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float strength; varying vec2 vUv;
+    void main(){
+      vec4 col = texture2D(tDiffuse, vUv);
+      // 到画面中心的距离，越靠边越大
+      vec2 p = vUv - 0.5;
+      float d = dot(p, p);
+      // 1.0 中心不变，边缘乘一个 <1 的系数，但下限保住不让它发黑
+      float v = smoothstep(0.75, 0.18, d * strength * 2.0);
+      v = mix(0.78, 1.0, v); // 最暗也只到 0.78，画面整体仍明亮
+      gl_FragColor = vec4(col.rgb * v, col.a);
+    }`
+};
+const vignettePass = new ShaderPass(vignetteShader);
+composer.addPass(vignettePass);
+
+// ============================================================
+// 8. resize 适配 + 渲染循环
+// ============================================================
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
+});
+
+let t = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  t += 0.005;
+  // 灰尘缓慢上浮飘动，循环回落
+  const p = dust.geometry.attributes.position;
+  for (let i = 0; i < dustCount; i++) {
+    let y = p.array[i*3+1] + 0.002 + Math.sin(t + i) * 0.0006;
+    if (y > 6) y = 0.1;
+    p.array[i*3+1] = y;
+  }
+  p.needsUpdate = true;
+  controls.update();
+  composer.render();
+}
+animate();
+</script>
+</body>
+</html>

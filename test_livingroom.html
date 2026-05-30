@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>余震·DROP — 破败客厅 test</title>
+<style>
+  /* 让画布铺满整个窗口，去掉浏览器默认白边 */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1a1c; }
+  #app { width: 100vw; height: 100vh; display: block; }
+  /* 左上角操作提示，半透明，不抢戏 */
+  #hint {
+    position: fixed; left: 14px; top: 12px; z-index: 10;
+    font: 13px/1.6 -apple-system, "PingFang SC", system-ui, sans-serif;
+    color: #d7d7d2; text-shadow: 0 1px 3px #000;
+    background: rgba(20,20,22,0.42); padding: 8px 12px; border-radius: 8px;
+    pointer-events: none; letter-spacing: .3px;
+  }
+  #hint b { color: #fff; }
+  /* 加载/报错提示 */
+  #err {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center; text-align: center;
+    color: #ff8c8c; font: 14px/1.7 monospace; padding: 30px;
+    background: #141416;
+  }
+</style>
+</head>
+<body>
+  <canvas id="app"></canvas>
+  <div id="hint">
+    <b>余震·DROP</b> · 破败客厅<br />
+    鼠标拖动 = 环视　·　滚轮 = 前后<br />
+    门外透入的光 = 出口方向
+  </div>
+  <div id="err"></div>
+
+  <!-- importmap：把裸模块名映射到 jsDelivr 上的 three@0.160.0。
+       仅测试期用 CDN；正式集成时换成项目本地 three（见 integration 说明）。 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+  // 顶层 try/catch：任何初始化报错都打到屏幕上，避免白屏让人摸不着头脑
+  try { main(); }
+  catch (e) {
+    const box = document.getElementById('err');
+    box.style.display = 'flex';
+    box.textContent = '渲染失败：' + (e && e.stack ? e.stack : e);
+    console.error(e);
+  }
+
+  function main() {
+
+  // ============================================================
+  // 0. 程序化纹理工厂
+  //    8MB 红线下不能贴图片，所有质感都用 <canvas> 现画。
+  //    把 canvas 想象成一块"白板"，我们用 2D 画笔在上面涂噪点/裂纹/污渍，
+  //    再交给 Three.js 当贴图用——这样零外部文件也能有脏旧的破败感。
+  // ============================================================
+
+  // 通用：建一个指定边长的离屏 canvas，返回 {canvas, ctx}
+  function makeCanvas(size) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    return { canvas: c, ctx: c.getContext('2d') };
+  }
+
+  // 往画布上撒一层细噪点（模拟落灰/颗粒）。amount 控制颗粒密度，dark 控制偏暗还是偏亮
+  function sprinkleNoise(ctx, size, amount, lo, hi) {
+    const img = ctx.getImageData(0, 0, size, size);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      // 在已有底色上叠加 ±随机的明度扰动，制造不均匀的脏感
+      if (Math.random() < amount) {
+        const v = lo + Math.random() * (hi - lo);
+        d[i]   = Math.min(255, d[i]   + v);
+        d[i+1] = Math.min(255, d[i+1] + v);
+        d[i+2] = Math.min(255, d[i+2] + v);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  // 灰白墙面纹理：浅灰底 + 噪点 + 几道裂纹 + 水渍。SCP 收容失效的"灵魂底色"
+  function wallTexture() {
+    const S = 512;
+    const { canvas, ctx } = makeCanvas(S);
+    // 底色：冷调浅灰白（提亮——SCP 收容失效是灰白通透，不是脏暗）
+    ctx.fillStyle = '#d3d2cc';
+    ctx.fillRect(0, 0, S, S);
+    // 大块不均匀的脏旧色斑（用半透明深灰随机涂抹）
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = `rgba(120,118,110,${0.04 + Math.random() * 0.08})`;
+      const r = 30 + Math.random() * 90;
+      ctx.beginPath();
+      ctx.arc(Math.random() * S, Math.random() * S, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 墙根/角落的霉黑水渍（偏底部更多，符合现实重力下渗）
+    for (let i = 0; i < 14; i++) {
+      const x = Math.random() * S;
+      const y = S * 0.6 + Math.random() * S * 0.4;
+      const g = ctx.createRadialGradient(x, y, 2, x, y, 40 + Math.random() * 50);
+      g.addColorStop(0, 'rgba(60,58,52,0.22)');
+      g.addColorStop(1, 'rgba(60,58,52,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, S, S);
+    }
+    // 裂纹：从一个点出发的分叉折线，越分越细，像真实墙裂
+    ctx.strokeStyle = 'rgba(40,38,34,0.55)';
+    drawCracks(ctx, S, 3);
+    // 细噪点收尾，统一颗粒感
+    sprinkleNoise(ctx, S, 0.5, -16, 16);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // 递归画裂纹：从 (x,y) 沿 angle 走一段，随机分叉。这是墙裂破败的关键细节
+  function drawCracks(ctx, S, count) {
+    for (let k = 0; k < count; k++) {
+      let x = Math.random() * S, y = Math.random() * S * 0.5;
+      let angle = Math.PI / 2 + (Math.random() - 0.5);
+      let w = 2.2;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      const steps = 30 + Math.floor(Math.random() * 30);
+      for (let i = 0; i < steps; i++) {
+        angle += (Math.random() - 0.5) * 0.6;
+        x += Math.cos(angle) * (6 + Math.random() * 8);
+        y += Math.sin(angle) * (6 + Math.random() * 8);
+        ctx.lineTo(x, y);
+        // 随机分叉一条更细的支线
+        if (Math.random() < 0.15) {
+          let bx = x, by = y, ba = angle + (Math.random() - 0.5) * 1.6;
+          ctx.lineWidth = w * 0.5;
+          for (let j = 0; j < 8; j++) {
+            ba += (Math.random() - 0.5) * 0.6;
+            bx += Math.cos(ba) * 5; by += Math.sin(ba) * 5;
+            ctx.lineTo(bx, by);
+          }
+          ctx.moveTo(x, y);
+          ctx.lineWidth = w;
+        }
+      }
+      ctx.stroke();
+    }
+  }
+
+  // 由一张灰度"高度图"canvas 生成法线贴图。
+  // 原理：相邻像素的明暗差 = 坡度，坡度决定法线方向。
+  // 这样墙面/地面的裂纹和颗粒就能在光照下产生真实的凹凸阴影，而不是平板贴纸。
+  function normalFromCanvas(srcCanvas, strength) {
+    const S = srcCanvas.width;
+    const sctx = srcCanvas.getContext('2d');
+    const src = sctx.getImageData(0, 0, S, S).data;
+    const { canvas, ctx } = makeCanvas(S);
+    const out = ctx.createImageData(S, S);
+    const o = out.data;
+    const lum = (x, y) => {
+      x = (x + S) % S; y = (y + S) % S;
+      const i = (y * S + x) * 4;
+      return (src[i] + src[i+1] + src[i+2]) / 3 / 255;
+    };
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        // 左右、上下的明度梯度 → 切线方向坡度
+        const dx = (lum(x - 1, y) - lum(x + 1, y)) * strength;
+        const dy = (lum(x, y - 1) - lum(x, y + 1)) * strength;
+        const len = Math.sqrt(dx * dx + dy * dy + 1);
+        const i = (y * S + x) * 4;
+        // 法线向量编码到 RGB（[-1,1] 映射到 [0,255]）
+        o[i]   = (dx / len * 0.5 + 0.5) * 255;
+        o[i+1] = (dy / len * 0.5 + 0.5) * 255;
+        o[i+2] = (1 / len * 0.5 + 0.5) * 255;
+        o[i+3] = 255;
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+  }
+
+  // 地板纹理：脏旧的木/水泥地，深浅条纹 + 大量积灰 + 散落裂痕
+  function floorTexture() {
+    const S = 512;
+    const { canvas, ctx } = makeCanvas(S);
+    ctx.fillStyle = '#b4afa5'; // 提亮的脏旧地面底色
+    ctx.fillRect(0, 0, S, S);
+    // 横向地板条纹（明暗交替，模拟木地板拼缝）
+    for (let i = 0; i < S; i += 64) {
+      ctx.fillStyle = i % 128 === 0 ? 'rgba(110,104,94,0.18)' : 'rgba(150,145,135,0.12)';
+      ctx.fillRect(0, i, S, 60);
+      ctx.fillStyle = 'rgba(60,56,50,0.5)';
+      ctx.fillRect(0, i + 60, S, 3); // 拼缝深线
+    }
+    // 大片积灰（浅灰半透明云团），地震后到处是灰
+    for (let i = 0; i < 30; i++) {
+      const x = Math.random() * S, y = Math.random() * S;
+      const g = ctx.createRadialGradient(x, y, 2, x, y, 30 + Math.random() * 60);
+      g.addColorStop(0, 'rgba(205,203,196,0.35)');
+      g.addColorStop(1, 'rgba(205,203,196,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+    }
+    sprinkleNoise(ctx, S, 0.55, -20, 20);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // 织物纹理（沙发/地毯）：带编织感的噪点底，可指定基色
+  function fabricTexture(base, dusty) {
+    const S = 256;
+    const { canvas, ctx } = makeCanvas(S);
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, S, S);
+    // 细密交叉网格，模拟纤维编织
+    ctx.globalAlpha = 0.06;
+    for (let i = 0; i < S; i += 3) {
+      ctx.fillStyle = i % 6 === 0 ? '#000' : '#fff';
+      ctx.fillRect(0, i, S, 1);
+      ctx.fillRect(i, 0, 1, S);
+    }
+    ctx.globalAlpha = 1;
+    if (dusty) {
+      // 沙发上落的灰：顶面更白
+      for (let i = 0; i < 18; i++) {
+        const x = Math.random() * S, y = Math.random() * S;
+        const g = ctx.createRadialGradient(x, y, 1, x, y, 20 + Math.random() * 40);
+        g.addColorStop(0, 'rgba(210,208,200,0.3)');
+        g.addColorStop(1, 'rgba(210,208,200,0)');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+      }
+    }
+    sprinkleNoise(ctx, S, 0.4, -14, 14);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // 木纹纹理（茶几/电视柜/桌椅）：暖灰木色 + 纹理线 + 蒙尘
+  function woodTexture(base) {
+    const S = 256;
+    const { canvas, ctx } = makeCanvas(S);
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, S, S);
+    // 木纹：横向起伏的深色线条
+    ctx.strokeStyle = 'rgba(70,58,46,0.3)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 24; i++) {
+      ctx.beginPath();
+      let y = Math.random() * S;
+      ctx.moveTo(0, y);
+      for (let x = 0; x <= S; x += 16) {
+        y += (Math.random() - 0.5) * 8;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // 蒙尘
+    for (let i = 0; i < 10; i++) {
+      const x = Math.random() * S, y = Math.random() * S;
+      const g = ctx.createRadialGradient(x, y, 1, x, y, 25 + Math.random() * 40);
+      g.addColorStop(0, 'rgba(200,196,186,0.28)');
+      g.addColorStop(1, 'rgba(200,196,186,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+    }
+    sprinkleNoise(ctx, S, 0.35, -12, 12);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // ============================================================
+  // 1. 渲染器 / 场景 / 相机
+  //    这是整个 3D 世界的"地基"：渲染器=画笔，场景=舞台，相机=观众的眼睛
+  // ============================================================
+  const canvas = document.getElementById('app');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 软阴影，边缘不生硬
+  // 色调映射 + 曝光：SCP 灵魂要求"明亮看得清"。
+  // 用 Reinhard 而非 ACES——ACES 会把高光压灰、整体偏暗；Reinhard 保亮度，灰白更通透。
+  // 曝光拉到 1.5，宁可偏亮也绝不偏黑（前车之鉴：有 agent 做成一团黑被毙）。
+  renderer.toneMapping = THREE.ReinhardToneMapping;
+  renderer.toneMappingExposure = 1.6;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+  const scene = new THREE.Scene();
+  // 冷灰色雾：远处轻微发灰，强化收容失效的清冷空气感（不压暗近景）
+  scene.background = new THREE.Color(0x9ea2a6);
+  scene.fog = new THREE.Fog(0x9ea2a6, 7, 22);
+
+  // 第一人称相机：放在站立视高 1.6m，略微看向门的方向
+  const camera = new THREE.PerspectiveCamera(
+    62, window.innerWidth / window.innerHeight, 0.05, 100
+  );
+  camera.position.set(0.4, 1.6, 2.6);
+
+  // OrbitControls 让测试时能拖动环视。集成进游戏时换成第一人称控制（见 integration）
+  const controls = new OrbitControls(camera, canvas);
+  controls.target.set(0, 1.3, -2);
+  controls.enablePan = false;
+  controls.minDistance = 0.1;
+  controls.maxDistance = 6;
+  controls.maxPolarAngle = Math.PI * 0.85; // 不让镜头钻到地板下
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+
+  // ============================================================
+  // 2. 灯光
+  //    明亮看得清 = 高强度环境光打底 + 一束门外冷光当主光源造方向感
+  // ============================================================
+  // 环境光：均匀照亮所有角落，避免任何死黑。给到 1.15（要求 ≥0.7），
+  // 这是"明亮看得清"的主力——环境光足够亮，单凭它每个面都不会黑
+  const ambient = new THREE.AmbientLight(0xd6dade, 1.15);
+  scene.add(ambient);
+
+  // 半球光：天花板偏冷白、地面偏暖灰的环境补光，让灰白更有空间层次
+  const hemi = new THREE.HemisphereLight(0xe6ebef, 0x8a857c, 0.9);
+  scene.add(hemi);
+
+  // 主方向光：模拟从大门外射入的天光，带蓝白冷调，投出长阴影
+  const sun = new THREE.DirectionalLight(0xf6f9ff, 1.7);
+  sun.position.set(-5, 5.5, -6.5); // 来自门口（门在 -Z 方向）斜上方
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.near = 0.5;
+  sun.shadow.camera.far = 30;
+  sun.shadow.camera.left = -8; sun.shadow.camera.right = 8;
+  sun.shadow.camera.top = 8; sun.shadow.camera.bottom = -8;
+  sun.shadow.bias = -0.0004;
+  scene.add(sun);
+
+  // 门口的强冷光点：让门缝那束光更亮、更有"出口在召唤"的引导感
+  const doorGlow = new THREE.PointLight(0xeaf2ff, 2.2, 9, 1.6);
+  doorGlow.position.set(-3.2, 1.5, -5.4);
+  scene.add(doorGlow);
+
+  // 室内补光：一盏暖弱的点光让室内不至于全冷，灰白里透一点旧暖
+  const warmFill = new THREE.PointLight(0xfff0dc, 12, 14, 2);
+  warmFill.position.set(2, 2.3, 0);
+  scene.add(warmFill);
+
+  // 房间中央天顶补光：再补一盏冷白点光，确保画面正中央始终明亮看得清
+  const centerFill = new THREE.PointLight(0xeef2f6, 14, 16, 2);
+  centerFill.position.set(0, 2.5, 0.5);
+  scene.add(centerFill);
+
+  // ============================================================
+  // 3. 共享材质
+  //    先把纹理 + 法线贴图做好，多个物体复用，省内存也统一风格
+  // ============================================================
+  const wallTex = wallTexture();
+  const wallNormal = normalFromCanvas(wallTex.image, 2.0);
+  const floorTex = floorTexture();
+  const floorNormal = normalFromCanvas(floorTex.image, 2.5);
+
+  const wallMat = new THREE.MeshStandardMaterial({
+    map: wallTex, normalMap: wallNormal,
+    normalScale: new THREE.Vector2(0.8, 0.8),
+    roughness: 0.95, metalness: 0.0, color: 0xffffff,
+  });
+
+  floorTex.repeat.set(3, 3); floorNormal.repeat.set(3, 3);
+  const floorMat = new THREE.MeshStandardMaterial({
+    map: floorTex, normalMap: floorNormal,
+    normalScale: new THREE.Vector2(0.9, 0.9),
+    roughness: 0.9, metalness: 0.0,
+  });
+
+  const sofaMat = new THREE.MeshStandardMaterial({
+    map: fabricTexture('#92969c', true), roughness: 0.96, metalness: 0,
+  });
+  const cushionMat = new THREE.MeshStandardMaterial({
+    map: fabricTexture('#9ca0a6', true), roughness: 0.95, metalness: 0,
+  });
+  const woodDark = new THREE.MeshStandardMaterial({
+    map: woodTexture('#857769'), roughness: 0.8, metalness: 0.05,
+  });
+  const woodLight = new THREE.MeshStandardMaterial({
+    map: woodTexture('#a39788'), roughness: 0.82, metalness: 0.04,
+  });
+  const rugMat = new THREE.MeshStandardMaterial({
+    map: fabricTexture('#736f68', true), roughness: 0.98, metalness: 0,
+  });
+  const metalMat = new THREE.MeshStandardMaterial({
+    color: 0x9aa0a4, roughness: 0.45, metalness: 0.7,
+  });
+  const screenMat = new THREE.MeshStandardMaterial({
+    color: 0x0d0f12, roughness: 0.25, metalness: 0.3,
+  });
+
+  // 小工具：建一个带阴影的 box，省去每次重复设属性
+  function box(w, h, d, mat, x, y, z) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true;
+    return m;
+  }
+
+  // ============================================================
+  // 4. 房间外壳：地板 + 四面墙 + 天花板
+  //    房间约 8m(宽 X) × 7m(深 Z) × 2.8m(高 Y)，门开在 -X / -Z 的角上
+  // ============================================================
+  const RW = 8, RD = 7, RH = 2.8;
+  const room = new THREE.Group();
+  scene.add(room);
+
+  // 地板
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(RW, RD), floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  room.add(floor);
+
+  // 天花板（轻微脏白，吃环境光后是灰白顶）
+  const ceil = new THREE.Mesh(
+    new THREE.PlaneGeometry(RW, RD),
+    new THREE.MeshStandardMaterial({ color: 0xdeded8, roughness: 1, side: THREE.DoubleSide })
+  );
+  ceil.rotation.x = Math.PI / 2;
+  ceil.position.y = RH;
+  ceil.receiveShadow = true;
+  room.add(ceil);
+
+  // 墙体：四面用厚 box，朝内可见。墙纹理重复以保持颗粒密度
+  function wall(w, h, d, x, y, z, repX, repY) {
+    const mat = wallMat.clone();
+    mat.map = wallTex.clone(); mat.map.needsUpdate = true;
+    mat.normalMap = wallNormal.clone(); mat.normalMap.needsUpdate = true;
+    mat.map.wrapS = mat.map.wrapT = THREE.RepeatWrapping;
+    mat.normalMap.wrapS = mat.normalMap.wrapT = THREE.RepeatWrapping;
+    mat.map.repeat.set(repX, repY); mat.normalMap.repeat.set(repX, repY);
+    const m = box(w, h, d, mat, x, y, z);
+    return m;
+  }
+  // 后墙（-Z，电视墙）
+  room.add(wall(RW, RH, 0.2, 0, RH/2, -RD/2, 3, 1.4));
+  // 前墙（+Z，相机背后）
+  room.add(wall(RW, RH, 0.2, 0, RH/2, RD/2, 3, 1.4));
+  // 右墙（+X）
+  room.add(wall(0.2, RH, RD, RW/2, RH/2, 0, 3, 1.4));
+
+  // 左墙（-X）：在这面墙上开一个门洞，所以拆成「门左 + 门上 + 门右窄条」三块
+  // 门洞：宽 1.3m，高 2.3m，中心在 z = -1.6
+  const doorZ = -1.6, doorW = 1.35, doorH = 2.3, lx = -RW/2;
+  // 门左侧墙
+  room.add(wall(0.2, RH, (RD/2 + doorZ - doorW/2) , lx, RH/2, (-RD/2 + (doorZ - doorW/2)) / 2 - 0.0, 1, 1.4));
+  // 上面那块算 z 跨度容易错，这里改成显式两段更稳：
+  // 门前段（靠 +Z 一侧）
+  {
+    const zStart = RD/2;               // 前墙交界
+    const zEnd = doorZ + doorW/2;       // 门洞近 +Z 边
+    const len = zStart - zEnd;
+    room.add(wall(0.2, RH, len, lx, RH/2, (zStart + zEnd)/2, 1, 1.4));
+  }
+  // 门后段（靠 -Z 一侧）
+  {
+    const zStart = doorZ - doorW/2;     // 门洞近 -Z 边
+    const zEnd = -RD/2;                 // 后墙交界
+    const len = zStart - zEnd;
+    room.add(wall(0.2, RH, len, lx, RH/2, (zStart + zEnd)/2, 1, 1.4));
+  }
+  // 门楣（门洞上方的墙）
+  room.add(wall(0.2, RH - doorH, doorW, lx, doorH + (RH - doorH)/2, doorZ, 1, 0.4));
+
+  // 门框（深木色，框住门洞，强调这是"出口"）
+  const frameMat = woodDark;
+  room.add(box(0.16, doorH, 0.12, frameMat, lx, doorH/2, doorZ - doorW/2)); // 框竖1
+  room.add(box(0.16, doorH, 0.12, frameMat, lx, doorH/2, doorZ + doorW/2)); // 框竖2
+  room.add(box(0.16, 0.14, doorW + 0.24, frameMat, lx, doorH, doorZ));      // 框横（门顶）
+
+  // 半开的门板：略微旋开，让门缝透光。门板在门洞内侧
+  const doorPanel = box(0.07, doorH - 0.08, doorW - 0.06, woodLight, lx + 0.05, (doorH - 0.08)/2, doorZ + 0.45);
+  doorPanel.rotation.y = -0.5; // 向室内旋开约 28°
+  room.add(doorPanel);
+  // 门把手
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 16), metalMat);
+  knob.position.set(lx + 0.18, 1.05, doorZ + 0.05);
+  room.add(knob);
+
+  // 门外的"光板"：一块发光平面贴在门洞外，制造门外强光涌入的视觉。
+  // 用 MeshBasicMaterial（自发光、不吃阴影），配合门口 PointLight，门缝那束光就立住了
+  const lightPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(doorW + 0.3, doorH + 0.2),
+    new THREE.MeshBasicMaterial({ color: 0xeef5ff, toneMapped: false })
+  );
+  lightPlane.position.set(lx - 0.35, doorH/2, doorZ);
+  lightPlane.rotation.y = Math.PI / 2;
+  room.add(lightPlane);
+
+  // 踢脚线（墙根一圈深色条，提升真实感）
+  const skirtMat = new THREE.MeshStandardMaterial({ color: 0x6d6860, roughness: 0.7 });
+  room.add(box(RW, 0.12, 0.04, skirtMat, 0, 0.06, -RD/2 + 0.12));
+  room.add(box(0.04, 0.12, RD, skirtMat, RW/2 - 0.12, 0.06, 0));
+
+  // ============================================================
+  // 5. 家具 —— 全用多 box 拼出结构细节，绝不用一个大方块糊弄
+  // ============================================================
+
+  // —— 5.1 沙发（靠右墙，多 box：底座 + 靠背 + 两扶手 + 3 坐垫 + 2 靠枕）——
+  function buildSofa() {
+    const g = new THREE.Group();
+    // 底座
+    g.add(box(2.2, 0.35, 0.95, sofaMat, 0, 0.28, 0));
+    // 靠背（略后倾）
+    const back = box(2.2, 0.7, 0.22, sofaMat, 0, 0.7, -0.36);
+    back.rotation.x = -0.12; g.add(back);
+    // 两个扶手
+    g.add(box(0.25, 0.55, 0.95, sofaMat, -1.0, 0.5, 0));
+    g.add(box(0.25, 0.55, 0.95, sofaMat,  1.0, 0.5, 0));
+    // 3 个坐垫（中间那个被震歪、抬起一角，破败感）
+    g.add(box(0.62, 0.18, 0.78, cushionMat, -0.62, 0.5, 0.04));
+    const midCushion = box(0.62, 0.18, 0.78, cushionMat, 0.0, 0.55, 0.06);
+    midCushion.rotation.z = 0.18; midCushion.rotation.y = 0.1; g.add(midCushion);
+    g.add(box(0.62, 0.18, 0.78, cushionMat, 0.62, 0.5, 0.04));
+    // 2 个靠枕（一个掉到坐垫上）
+    const p1 = box(0.4, 0.4, 0.14, cushionMat, -0.55, 0.78, -0.18);
+    p1.rotation.z = 0.2; g.add(p1);
+    const p2 = box(0.4, 0.4, 0.14, cushionMat, 0.5, 0.6, 0.2);
+    p2.rotation.set(1.4, 0.3, 0.5); g.add(p2); // 一个掉到坐垫上躺平
+    // 沙发腿
+    for (const sx of [-1.0, 1.0]) for (const sz of [-0.4, 0.4])
+      g.add(box(0.08, 0.12, 0.08, woodDark, sx, 0.06, sz));
+    g.position.set(2.7, 0, 0.6);
+    g.rotation.y = -Math.PI / 2; // 让沙发面朝茶几/电视
+    return g;
+  }
+  scene.add(buildSofa());
+
+  // —— 5.2 茶几（沙发前，木质，玻璃台面被震裂用半透板表示，腿+横撑）——
+  function buildCoffeeTable() {
+    const g = new THREE.Group();
+    // 台面
+    g.add(box(1.2, 0.06, 0.65, woodLight, 0, 0.42, 0));
+    // 下层隔板
+    g.add(box(1.1, 0.04, 0.55, woodDark, 0, 0.16, 0));
+    // 四条腿
+    for (const sx of [-0.52, 0.52]) for (const sz of [-0.26, 0.26])
+      g.add(box(0.07, 0.42, 0.07, woodDark, sx, 0.21, sz));
+    // 台面上的杂物：倒下的杯子 + 散落的书
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.045, 0.11, 16),
+      new THREE.MeshStandardMaterial({ color: 0xd8d4cc, roughness: 0.5 }));
+    cup.rotation.z = Math.PI / 2; cup.position.set(0.25, 0.48, 0.1);
+    cup.castShadow = true; g.add(cup);
+    const bookMat = new THREE.MeshStandardMaterial({ color: 0x7a6f64, roughness: 0.85 });
+    const bk = box(0.22, 0.04, 0.16, bookMat, -0.2, 0.47, -0.08);
+    bk.rotation.y = 0.4; g.add(bk);
+    g.position.set(1.0, 0, 0.7);
+    return g;
+  }
+  scene.add(buildCoffeeTable());
+
+  // —— 5.3 电视柜 + 电视（贴后墙）——
+  function buildTVUnit() {
+    const g = new THREE.Group();
+    // 柜体（长方矮柜，含两个抽屉缝）
+    g.add(box(1.8, 0.5, 0.45, woodDark, 0, 0.25, 0));
+    g.add(box(0.86, 0.46, 0.02, woodLight, -0.46, 0.25, 0.23)); // 左抽屉面
+    g.add(box(0.86, 0.46, 0.02, woodLight, 0.46, 0.25, 0.23));  // 右抽屉面
+    // 抽屉把手
+    g.add(box(0.18, 0.03, 0.03, metalMat, -0.46, 0.25, 0.25));
+    g.add(box(0.18, 0.03, 0.03, metalMat, 0.46, 0.25, 0.25));
+    // 电视（被震得歪斜、屏幕裂——用一块斜放的黑屏 + 边框）
+    const tv = new THREE.Group();
+    tv.add(box(1.15, 0.68, 0.05, new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.6 }), 0, 0, 0)); // 外框
+    const screen = box(1.05, 0.58, 0.02, screenMat, 0, 0, 0.03); // 黑屏
+    tv.add(screen);
+    // 屏上几道裂痕：几条细长扁 box 斜贴在屏面上，反光发灰，模拟碎裂玻璃
+    const crackMat = new THREE.MeshStandardMaterial({
+      color: 0x9a9a9a, roughness: 0.2, metalness: 0.1,
+    });
+    const crackAngles = [0.5, -0.9, 1.4, 0.1];
+    for (let i = 0; i < crackAngles.length; i++) {
+      const cr = box(0.5 + Math.random() * 0.4, 0.006, 0.012, crackMat,
+        (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.4, 0.045);
+      cr.rotation.z = crackAngles[i];
+      tv.add(cr);
+    }
+    tv.position.set(0, 0.9, -0.15);
+    tv.rotation.z = 0.06; tv.rotation.y = -0.05; // 歪斜
+    g.add(tv);
+    // 电视底座支架
+    g.add(box(0.3, 0.06, 0.2, metalMat, 0, 0.53, -0.1));
+    g.position.set(-0.5, 0, -RD/2 + 0.32);
+    return g;
+  }
+  scene.add(buildTVUnit());
+
+  // —— 5.4 餐桌 + 4 椅（房间另一侧，一把椅子翻倒在地）——
+  function buildDining() {
+    const g = new THREE.Group();
+    // 桌面 + 四腿
+    g.add(box(1.5, 0.07, 0.9, woodLight, 0, 0.76, 0));
+    for (const sx of [-0.65, 0.65]) for (const sz of [-0.35, 0.35])
+      g.add(box(0.09, 0.76, 0.09, woodDark, sx, 0.38, sz));
+    // 桌面横撑
+    g.add(box(1.3, 0.06, 0.06, woodDark, 0, 0.5, -0.35));
+    g.add(box(1.3, 0.06, 0.06, woodDark, 0, 0.5, 0.35));
+
+    // 一把直立的椅子（座面 + 靠背 + 四腿）
+    function chair() {
+      const c = new THREE.Group();
+      c.add(box(0.42, 0.05, 0.42, woodLight, 0, 0.46, 0)); // 座面
+      // 靠背：两根竖柱 + 三根横档
+      c.add(box(0.05, 0.5, 0.05, woodDark, -0.18, 0.7, -0.18));
+      c.add(box(0.05, 0.5, 0.05, woodDark, 0.18, 0.7, -0.18));
+      for (let i = 0; i < 3; i++)
+        c.add(box(0.36, 0.04, 0.04, woodDark, 0, 0.62 + i * 0.12, -0.18));
+      // 四腿
+      for (const sx of [-0.18, 0.18]) for (const sz of [-0.18, 0.18])
+        c.add(box(0.05, 0.46, 0.05, woodDark, sx, 0.23, sz));
+      return c;
+    }
+    const c1 = chair(); c1.position.set(0, 0, 0.7); c1.rotation.y = Math.PI; g.add(c1);
+    const c2 = chair(); c2.position.set(-0.5, 0, -0.7); g.add(c2);
+    const c3 = chair(); c3.position.set(0.5, 0, -0.7); g.add(c3);
+    // 第 4 把椅子被震翻在地（整体旋转 90° 躺倒）
+    const c4 = chair();
+    c4.position.set(1.1, 0.25, 0.5);
+    c4.rotation.set(Math.PI / 2, 0.4, 0.2);
+    g.add(c4);
+
+    g.position.set(-2.4, 0, 1.6);
+    return g;
+  }
+  scene.add(buildDining());
+
+  // —— 5.5 地毯（沙发+茶几下方，边角因震动卷起一块）——
+  function buildRug() {
+    const g = new THREE.Group();
+    const rug = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.8, 4, 4), rugMat);
+    rug.rotation.x = -Math.PI / 2;
+    rug.position.y = 0.012;
+    rug.receiveShadow = true;
+    g.add(rug);
+    // 卷起的一角（一块斜立的小平面）
+    const corner = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), rugMat);
+    corner.position.set(1.15, 0.12, 0.78);
+    corner.rotation.set(-Math.PI / 2 + 0.8, 0, 0.3);
+    g.add(corner);
+    g.position.set(1.0, 0, 0.7);
+    return g;
+  }
+  scene.add(buildRug());
+
+  // ============================================================
+  // 6. 破败碎物：地上散落的碎块 / 掉落的灰泥 / 倒落小物
+  //    用一批随机摆放的小 box 制造"地震后狼藉"的地面层
+  // ============================================================
+  const debris = new THREE.Group();
+  for (let i = 0; i < 70; i++) {
+    const s = 0.04 + Math.random() * 0.13;
+    const shade = 0.62 + Math.random() * 0.28; // 灰白碎块，明度随机
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(s, s * (0.4 + Math.random() * 0.6), s * (0.6 + Math.random() * 0.8)),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(shade, shade, shade * 0.97), roughness: 0.95,
+      })
+    );
+    // 撒在房间地面，避开门口正中通道一点
+    m.position.set(
+      (Math.random() - 0.5) * (RW - 1),
+      s * 0.4,
+      (Math.random() - 0.5) * (RD - 1)
+    );
+    m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    m.castShadow = true; m.receiveShadow = true;
+    debris.add(m);
+  }
+  scene.add(debris);
+
+  // 墙上掉落一大块灰泥后露出的"暗斑"（贴在后墙的深色补丁）
+  const patchMat = new THREE.MeshStandardMaterial({ color: 0x6f6a62, roughness: 1 });
+  const patch = box(0.9, 1.1, 0.02, patchMat, 1.6, 1.6, -RD/2 + 0.11);
+  scene.add(patch);
+  const patch2 = box(0.5, 0.7, 0.02, patchMat, -3.0, 1.9, -RD/2 + 0.11);
+  scene.add(patch2);
+
+  // 天花板裂缝处垂下的一缕电线（细长 box 串）
+  const wireMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2c, roughness: 0.6 });
+  let wx = -1.5, wy = RH - 0.02, wz = -0.5, wa = 0;
+  for (let i = 0; i < 8; i++) {
+    wa += 0.25;
+    const seg = box(0.02, 0.18, 0.02, wireMat, wx, wy, wz);
+    seg.rotation.z = wa; scene.add(seg);
+    wy -= 0.15; wx += Math.sin(wa) * 0.04;
+  }
+
+  // ============================================================
+  // 7. 飘浮的灰尘粒子
+  //    地震后空气里悬浮的尘埃，被门外光照亮——SCP 标志性的"光柱里飞舞的灰"
+  // ============================================================
+  function buildDust() {
+    const COUNT = 600;
+    const pos = new Float32Array(COUNT * 3);
+    for (let i = 0; i < COUNT; i++) {
+      pos[i*3]   = (Math.random() - 0.5) * RW;
+      pos[i*3+1] = Math.random() * RH;
+      pos[i*3+2] = (Math.random() - 0.5) * RD;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xe8ebee, size: 0.025, transparent: true, opacity: 0.5,
+      depthWrite: false, sizeAttenuation: true,
+    });
+    return new THREE.Points(geo, mat);
+  }
+  const dust = buildDust();
+  scene.add(dust);
+
+  // ============================================================
+  // 8. 后处理：克制的 Bloom + 轻暗角
+  //    要求严防"画面弄黑"，所以 bloom 阈值高、强度低（只让门口光晕开），
+  //    暗角极淡（只压最外圈一点点），中心永远明亮看得清
+  // ============================================================
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.35,  // strength：轻
+    0.6,   // radius
+    0.85   // threshold：高阈值，只有门口最亮处才发光，不污染整体
+  );
+  composer.addPass(bloom);
+
+  // 自定义暗角 Shader：极轻，只在画面最外圈乘以 0.82，绝不压暗中心
+  const vignetteShader = {
+    uniforms: { tDiffuse: { value: null }, strength: { value: 0.32 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+    `,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform float strength;
+      varying vec2 vUv;
+      void main(){
+        vec4 col = texture2D(tDiffuse, vUv);
+        // 到画面中心的距离，中心=0 边缘≈0.7
+        float d = distance(vUv, vec2(0.5));
+        // smoothstep 让暗角只在很外圈才生效，且最多衰减 strength
+        float vig = 1.0 - smoothstep(0.55, 0.9, d) * strength;
+        gl_FragColor = vec4(col.rgb * vig, col.a);
+      }
+    `,
+  };
+  composer.addPass(new ShaderPass(vignetteShader));
+
+  // ============================================================
+  // 9. 渲染循环 + resize 适配
+  // ============================================================
+  const clock = new THREE.Clock();
+  function animate() {
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+    // 灰尘缓慢上下飘动 + 横向微移，制造空气流动感
+    const dp = dust.geometry.attributes.position.array;
+    for (let i = 0; i < dp.length; i += 3) {
+      dp[i+1] += Math.sin(t * 0.5 + i) * 0.0006 + 0.0008; // 缓慢上升
+      dp[i]   += Math.sin(t * 0.3 + i) * 0.0004;
+      if (dp[i+1] > RH) dp[i+1] = 0; // 升到顶就回到底，循环
+    }
+    dust.geometry.attributes.position.needsUpdate = true;
+    // 门口光晕微微呼吸，强化"出口在召唤"的引导
+    doorGlow.intensity = 2.0 + Math.sin(t * 1.3) * 0.25;
+
+    controls.update();
+    composer.render();
+  }
+  animate();
+
+  function onResize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    bloom.setSize(w, h);
+  }
+  window.addEventListener('resize', onResize);
+
+  } // main end
+  </script>
+</body>
+</html>

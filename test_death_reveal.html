@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>余震·DROP — 第三人称死亡揭示（楼板压人）</title>
+<style>
+  /* ====== 基础样式 ======
+     把整个页面想象成一个"暗房展台"：背景纯黑，只有舞台中央被灯打亮。
+     所以 body 直接黑底，canvas 铺满整屏。 */
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  /* 左下角的"法医档案"说明牌，营造事故还原的严肃感 */
+  #caption {
+    position: fixed; left: 24px; bottom: 22px; z-index: 10;
+    color: #d8d8d8; font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size: 13px; line-height: 1.7; letter-spacing: .3px;
+    text-shadow: 0 1px 6px rgba(0,0,0,.9); pointer-events: none;
+    border-left: 2px solid #b03a2e; padding-left: 12px; max-width: 320px;
+  }
+  #caption .t { font-size: 16px; color: #fff; font-weight: 600; letter-spacing: 2px; }
+  #caption .d { color: #9a9a9a; font-size: 12px; margin-top: 4px; }
+  /* 顶部一行红字死因，像新闻字幕 */
+  #verdict {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%); z-index: 10;
+    color: #ff4d3d; font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size: 20px; font-weight: 700; letter-spacing: 4px;
+    text-shadow: 0 0 14px rgba(255,60,40,.45); pointer-events: none;
+  }
+  #hint {
+    position: fixed; right: 18px; bottom: 16px; z-index: 10; color: #666;
+    font-family: system-ui,sans-serif; font-size: 11px; pointer-events: none;
+  }
+</style>
+<!-- importmap：从 jsdelivr CDN 引入 three 主包 + addons。
+     仅测试用；正式集成时换成项目自己的 three 来源。 -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="verdict">死 因 ：建 筑 倒 塌 砸 压</div>
+  <div id="caption">
+    <div class="t">事 故 还 原 · 档 案 No.07</div>
+    <div>受害者在楼板塌落瞬间未能就近躲避，</div>
+    <div>被斜插坠落的预制混凝土板压住躯干。</div>
+    <div class="d">拖动鼠标 360° 查看 · 滚轮缩放</div>
+  </div>
+  <div id="hint">programmatic geometry · spotlight forensic stage</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
+
+/* =========================================================================
+   余震·DROP —— 第三人称死亡揭示场景
+   设计思路（给零基础同学）：
+   整个文件做的事就像搭一个"法医暗房展台"——
+     1) 一个纯黑房间（场景背景黑 + 地面是黑灰水泥）
+     2) 一束聚光灯从斜上方打下来，像手术灯，只照亮中间一小块
+     3) 中间躺着一个用"积木"拼出来的人（头/躯干/四肢分段）
+     4) 一块斜插下来的混凝土楼板压在他身上
+     5) 周围撒一点碎屑、钢筋、灰尘粒子做氛围
+   所有"质感"都不靠图片，全靠：程序画的 Canvas 纹理 + PBR 材质 + 光照阴影。
+   ========================================================================= */
+
+// ---------- 0. 渲染器：负责把 3D 世界画到屏幕上 ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// 开启阴影：这是"展台"立体感的关键，楼板要在人身上投下硬阴影
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// 色调映射 + 曝光：把物理光照"翻译"成好看的画面。
+// 曝光 1.25 让灰白材质显得明亮，符合"看得清"的硬要求。
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.28;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------- 1. 场景 & 相机 ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050506);   // 纯黑暗房
+scene.fog = new THREE.FogExp2(0x070708, 0.018); // 极淡的雾，让远处碎屑融进黑暗，聚焦中央
+
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(4.2, 3.0, 5.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;          // 拖动有惯性，手感顺滑
+controls.dampingFactor = 0.06;
+controls.target.set(0, 0.5, 0);         // 始终盯着展台中心（人体位置）
+controls.minDistance = 3;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.52; // 不让镜头钻到地板下面
+controls.autoRotate = true;             // 缓慢自转，像博物馆展品转台
+controls.autoRotateSpeed = 0.55;
+
+/* =========================================================================
+   2. 程序化纹理工厂
+   —— 不用任何图片文件，全部用 <canvas> 现画。
+   思路：在一张离屏画布上用 JS 画噪点/污渍/裂纹，再喂给材质当贴图。
+   ========================================================================= */
+
+// 复用的"伪随机"——同一坐标永远返回同一值，避免纹理每帧抖动
+function rand(seed){ const x = Math.sin(seed * 999.13) * 43758.5453; return x - Math.floor(x); }
+
+/**
+ * 造一张混凝土纹理（颜色图 + 配套的法线图）。
+ * 颜色图：灰白底 + 一层噪点 + 几道污渍 + 细裂纹。
+ * 法线图：根据明暗模拟坑洼，让光照在表面产生真实的凹凸感。
+ */
+function makeConcrete(size = 512, base = '#b9b9b6'){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d');
+  // 底色
+  g.fillStyle = base; g.fillRect(0, 0, size, size);
+  // 大块明暗不均（云斑）——让墙面有"脏旧"的层次
+  for(let i = 0; i < 90; i++){
+    const x = rand(i+1)*size, y = rand(i+7)*size, r = 40 + rand(i+3)*140;
+    const a = (rand(i+5) - 0.5) * 0.16;
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    const v = a > 0 ? 255 : 0;
+    grad.addColorStop(0, `rgba(${v},${v},${v},${Math.abs(a)})`);
+    grad.addColorStop(1, `rgba(${v},${v},${v},0)`);
+    g.fillStyle = grad; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+  // 细密噪点（骨料颗粒感）
+  const img = g.getImageData(0, 0, size, size), d = img.data;
+  for(let i = 0; i < d.length; i += 4){
+    const n = (Math.random() - 0.5) * 36;
+    d[i] += n; d[i+1] += n; d[i+2] += n;
+  }
+  g.putImageData(img, 0, 0);
+  // 几道深色污渍/水渍流痕
+  g.globalAlpha = 0.10; g.strokeStyle = '#3a3a36';
+  for(let i = 0; i < 14; i++){
+    g.lineWidth = 1 + rand(i*2)*3;
+    g.beginPath();
+    let x = rand(i*5)*size, y = rand(i*9)*size;
+    g.moveTo(x, y);
+    for(let s = 0; s < 6; s++){ x += (rand(i+s)-0.5)*60; y += rand(i+s+2)*50; g.lineTo(x, y); }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  // 裂纹（细黑线）
+  g.strokeStyle = 'rgba(20,20,18,0.5)';
+  for(let i = 0; i < 8; i++){
+    g.lineWidth = 0.6 + rand(i)*1.2;
+    g.beginPath();
+    let x = rand(i*3+1)*size, y = rand(i*4+2)*size;
+    g.moveTo(x, y);
+    for(let s = 0; s < 8; s++){ x += (rand(i*s+1)-0.5)*70; y += (rand(i*s+3)-0.5)*70; g.lineTo(x, y); }
+    g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+
+  // === 由灰度生成法线贴图 ===
+  // 原理：相邻像素亮度差 = 坡度。把坡度编码成 RGB 就是法线图。
+  const nc = document.createElement('canvas'); nc.width = nc.height = size;
+  const ng = nc.getContext('2d');
+  const src = g.getImageData(0, 0, size, size).data;
+  const out = ng.createImageData(size, size), od = out.data;
+  const lum = (x, y) => { const i = ((y&(size-1))*size + (x&(size-1)))*4; return (src[i]+src[i+1]+src[i+2])/765; };
+  const strength = 2.2;
+  for(let y = 0; y < size; y++) for(let x = 0; x < size; x++){
+    const dx = (lum(x-1,y) - lum(x+1,y)) * strength;
+    const dy = (lum(x,y-1) - lum(x,y+1)) * strength;
+    const len = Math.hypot(dx, dy, 1);
+    const i = (y*size + x)*4;
+    od[i]   = ((dx/len)*0.5 + 0.5)*255;
+    od[i+1] = ((dy/len)*0.5 + 0.5)*255;
+    od[i+2] = (1/len)*255;
+    od[i+3] = 255;
+  }
+  ng.putImageData(out, 0, 0);
+  const normal = new THREE.CanvasTexture(nc);
+  normal.wrapS = normal.wrapT = THREE.RepeatWrapping;
+
+  return { map: tex, normalMap: normal };
+}
+
+/** 造一张皮肤/衣物用的素色磨损纹理（偏冷灰，符合"尸检"冷调） */
+function makeCloth(size = 256, base = '#7d8a8f'){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0,0,size,size);
+  const img = g.getImageData(0,0,size,size), d = img.data;
+  for(let i = 0; i < d.length; i += 4){
+    const n = (Math.random()-0.5)*28; d[i]+=n; d[i+1]+=n; d[i+2]+=n;
+  }
+  g.putImageData(img,0,0);
+  // 灰尘斑（被埋过的脏污）
+  g.globalAlpha = 0.12; g.fillStyle = '#cfcabd';
+  for(let i = 0; i < 30; i++){
+    const x = rand(i)*size, y = rand(i+4)*size, r = 4 + rand(i+2)*18;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+  g.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// 预生成几套纹理，供下面反复用（避免重复计算）
+const concreteSlab  = makeConcrete(512, '#bdbdb8');  // 楼板：偏白
+const concreteFloor = makeConcrete(512, '#9a9a96');  // 地面：略深
+const clothTex      = makeCloth(256, '#6f7b80');     // 衣服：冷灰蓝
+const skinTex       = makeCloth(256, '#b9a596');     // 皮肤：暗哑肤色
+
+/* =========================================================================
+   3. 地面 —— 暗房的"展台底盘"
+   只做一小块圆形地面，边缘没入黑暗，强化"聚光灯只照中央"的感觉。
+   ========================================================================= */
+// 注意：makeConcrete() 返回的是一个「打包对象」{ map, normalMap }，
+// 不是单张贴图。所以这里必须取 .map / .normalMap 拆包后再喂给材质。
+// （历史 bug：之前误把整个对象直接当 map 传进来，导致 floorMat.map 是个普通对象、
+//  没有 .repeat 方法，下一行 .repeat.set() 直接抛 TypeError，
+//  让整段 module 脚本在这里崩掉、后面的人体/楼板/灯光全部没建出来 → 一片漆黑。）
+const floorMat = new THREE.MeshStandardMaterial({
+  map: concreteFloor.map, normalMap: concreteFloor.normalMap,
+  color: 0x8d8d88, roughness: 0.96, metalness: 0.02,
+  normalScale: new THREE.Vector2(0.8, 0.8),
+});
+floorMat.map.repeat.set(3, 3); floorMat.normalMap.repeat.set(3, 3);
+const floor = new THREE.Mesh(new THREE.CircleGeometry(7, 64), floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+/* =========================================================================
+   4. 人体模型 —— 用积木拼出一个"被压倒"的人
+   设计：建一个 group，每个肢体是一个 Box/Cylinder，
+   按真实人体比例摆出"仰面倒地、躯干被压、四肢瘫开"的姿态。
+   把它整体压低、略陷进地面，表现"被压住"。
+   ========================================================================= */
+const bodyMatSkin  = new THREE.MeshStandardMaterial({ map: skinTex,  color: 0xc8b4a4, roughness: 0.78, metalness: 0.0 });
+const bodyMatCloth = new THREE.MeshStandardMaterial({ map: clothTex, color: 0x7c878c, roughness: 0.9,  metalness: 0.0 });
+
+// 小工具：快速造一个会投/收阴影的盒子肢体
+function limb(w, h, d, mat){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d, 2, 2, 2), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+// 圆柱肢体（四肢更自然）
+function limbCyl(rTop, rBot, len, mat){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, len, 16), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+const human = new THREE.Group();
+
+// —— 头：略偏一侧，表现昏迷/失去意识
+const head = limbCyl(0.135, 0.12, 0.26, bodyMatSkin);
+// 用一个略扁的球更像头，这里用缩放盒子+圆柱组合：先放头颅主体
+const skull = new THREE.Mesh(new THREE.SphereGeometry(0.14, 24, 20), bodyMatSkin);
+skull.castShadow = skull.receiveShadow = true;
+skull.scale.set(1, 1.12, 1.15);
+skull.position.set(-0.95, 0.16, 0.18);
+skull.rotation.z = 0.3;
+human.add(skull);
+// 脖子
+const neck = limbCyl(0.07, 0.08, 0.14, bodyMatSkin);
+neck.position.set(-0.82, 0.15, 0.12); neck.rotation.z = Math.PI/2 * 0.9;
+human.add(neck);
+
+// —— 躯干：仰卧，被楼板压住的核心区域。略微下陷。
+const torso = limb(0.62, 0.26, 0.42, bodyMatCloth);
+torso.position.set(-0.45, 0.13, 0.05);
+torso.rotation.z = 0.04;
+human.add(torso);
+// 胸/腹分段，让躯干不是一个死方块（加肋骨起伏的细节盒）
+const chest = limb(0.30, 0.22, 0.40, bodyMatCloth);
+chest.position.set(-0.62, 0.14, 0.06);
+human.add(chest);
+const pelvis = limb(0.26, 0.20, 0.40, bodyMatCloth);
+pelvis.position.set(-0.16, 0.12, 0.04);
+human.add(pelvis);
+
+// —— 左臂（瘫向外侧，被压住下半身后手臂自然摊开）
+const upperArmL = limbCyl(0.06, 0.055, 0.30, bodyMatCloth);
+upperArmL.position.set(-0.55, 0.12, -0.34);
+upperArmL.rotation.set(0, 0, Math.PI/2 - 0.35);
+human.add(upperArmL);
+const foreArmL = limbCyl(0.05, 0.045, 0.30, bodyMatSkin);
+foreArmL.position.set(-0.52, 0.06, -0.62);
+foreArmL.rotation.set(0.2, 0, Math.PI/2 - 0.1);
+human.add(foreArmL);
+
+// —— 右臂（搭在身侧，手伸向头，像最后挣扎护头）
+const upperArmR = limbCyl(0.06, 0.055, 0.30, bodyMatCloth);
+upperArmR.position.set(-0.58, 0.13, 0.40);
+upperArmR.rotation.set(0, 0, Math.PI/2 - 0.5);
+human.add(upperArmR);
+const foreArmR = limbCyl(0.05, 0.045, 0.30, bodyMatSkin);
+foreArmR.position.set(-0.78, 0.14, 0.42);
+foreArmR.rotation.set(0, 0, Math.PI/2 - 1.0);
+human.add(foreArmR);
+
+// —— 左腿（被压在楼板下，略陷地）
+const thighL = limbCyl(0.085, 0.07, 0.40, bodyMatCloth);
+thighL.position.set(0.15, 0.10, -0.12);
+thighL.rotation.set(0, 0, Math.PI/2 - 0.15);
+human.add(thighL);
+const shinL = limbCyl(0.06, 0.05, 0.40, bodyMatCloth);
+shinL.position.set(0.52, 0.08, -0.14);
+shinL.rotation.set(0, 0, Math.PI/2 - 0.05);
+human.add(shinL);
+const footL = limb(0.16, 0.08, 0.12, bodyMatSkin);
+footL.position.set(0.74, 0.05, -0.14); footL.rotation.z = -0.2;
+human.add(footL);
+
+// —— 右腿（向外撇开）
+const thighR = limbCyl(0.085, 0.07, 0.40, bodyMatCloth);
+thighR.position.set(0.14, 0.10, 0.22);
+thighR.rotation.set(0.2, 0, Math.PI/2 - 0.2);
+human.add(thighR);
+const shinR = limbCyl(0.06, 0.05, 0.40, bodyMatCloth);
+shinR.position.set(0.50, 0.08, 0.30);
+shinR.rotation.set(0.25, 0, Math.PI/2 - 0.05);
+human.add(shinR);
+const footR = limb(0.16, 0.08, 0.12, bodyMatSkin);
+footR.position.set(0.72, 0.05, 0.33); footR.rotation.set(0, 0.2, -0.15);
+human.add(footR);
+
+// 整个人略陷进地面、稍微转一点角度，避免正对镜头呆板
+human.position.set(0.1, 0.02, 0.0);
+human.rotation.y = -0.25;
+scene.add(human);
+
+/* =========================================================================
+   5. 压住他的水泥楼板 —— 主角道具
+   斜插姿态：一头着地、一头压在躯干上，像天花板塌下来斜砸。
+   细节：露出的钢筋（细圆柱）+ 板边的破损碎块，强化"断裂"真实感。
+   ========================================================================= */
+// 同理：concreteSlab 也是打包对象，取 .map / .normalMap 拆包。
+const slabMat = new THREE.MeshStandardMaterial({
+  map: concreteSlab.map, normalMap: concreteSlab.normalMap,
+  color: 0xc2c2bc, roughness: 0.93, metalness: 0.03,
+  normalScale: new THREE.Vector2(1.0, 1.0),
+});
+slabMat.map.repeat.set(2, 1); slabMat.normalMap.repeat.set(2, 1);
+
+const slabGroup = new THREE.Group();
+// 主楼板：一块厚板，多分段以便法线贴图细腻
+const slab = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.22, 1.7, 8, 2, 6), slabMat);
+slab.castShadow = true; slab.receiveShadow = true;
+slabGroup.add(slab);
+
+// 板边缘的破损碎块（几个小盒子贴在断口处，破除"完美长方体"的塑料感）
+const chipMat = new THREE.MeshStandardMaterial({ map: concreteSlab.map, color: 0xb0b0a8, roughness: 0.95 });
+for(let i = 0; i < 7; i++){
+  const s = 0.12 + rand(i)*0.18;
+  const chip = new THREE.Mesh(new THREE.BoxGeometry(s, s*0.7, s, 1,1,1), chipMat);
+  chip.castShadow = chip.receiveShadow = true;
+  chip.position.set(-1.3 + rand(i+2)*0.3, (rand(i)-0.5)*0.2, -0.85 + rand(i+5)*1.7);
+  chip.rotation.set(rand(i)*3, rand(i+1)*3, rand(i+2)*3);
+  slabGroup.add(chip);
+}
+// 露出的钢筋（断口处的细弯钢筋）
+const rebarMat = new THREE.MeshStandardMaterial({ color: 0x6e5a44, roughness: 0.55, metalness: 0.85 });
+for(let i = 0; i < 5; i++){
+  const rebar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.5 + rand(i)*0.4, 8), rebarMat);
+  rebar.castShadow = true;
+  rebar.position.set(-1.28, 0.02, -0.6 + i*0.3);
+  rebar.rotation.set(Math.PI/2 - 0.3 + rand(i)*0.4, 0, rand(i)*0.3 - 0.15);
+  slabGroup.add(rebar);
+}
+
+// 把楼板摆成"斜插压人"：一端翘起在身体上方，一端落地。
+slabGroup.position.set(-0.15, 0.62, 0.05);
+slabGroup.rotation.set(0.04, 0.12, -0.30);  // 绕 Z 倾斜 → 斜插姿态
+scene.add(slabGroup);
+
+// 楼板和身体接触处的"压痕粉尘堆"——一圈小碎屑，暗示挤压
+const dustPileMat = new THREE.MeshStandardMaterial({ map: concreteFloor.map, color: 0xa5a59c, roughness: 1.0 });
+for(let i = 0; i < 40; i++){
+  const s = 0.03 + rand(i+10)*0.07;
+  const d = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), dustPileMat);
+  d.castShadow = d.receiveShadow = true;
+  const ang = rand(i)*7, rad = 0.4 + rand(i+3)*1.6;
+  d.position.set(Math.cos(ang)*rad, s*0.6, Math.sin(ang)*rad);
+  d.rotation.set(rand(i)*3, rand(i+1)*3, rand(i+2)*3);
+  scene.add(d);
+}
+
+/* =========================================================================
+   6. 灯光 —— 暗房的灵魂
+   主灯：一束 SpotLight 从斜上方打下，像法医手术灯，投出硬阴影。
+   补光：低强度 AmbientLight + HemisphereLight，保证"灰白看得清"，
+        但不能太亮否则破坏聚光戏剧感——这是平衡的关键。
+   ========================================================================= */
+// 环境光：托底亮度，让暗部不死黑（硬要求：强度 0.7+）
+const ambient = new THREE.AmbientLight(0x6a7078, 0.72);
+scene.add(ambient);
+// 半球光：天空冷、地面暖，给灰白材质自然的体积感
+const hemi = new THREE.HemisphereLight(0xaeb4bd, 0x2a2622, 0.55);
+scene.add(hemi);
+
+// 主聚光灯：核心。位置在人体斜上方，照亮"人+楼板+一小块地"
+const spot = new THREE.SpotLight(0xffffff, 90);
+spot.position.set(2.5, 6.2, 3.0);
+spot.target.position.set(0, 0.4, 0);
+spot.angle = Math.PI / 7.0;     // 光锥张角：刚好罩住展台
+spot.penumbra = 0.45;           // 边缘柔化，避免硬切的圆圈
+spot.decay = 1.4;
+spot.distance = 22;
+spot.castShadow = true;
+spot.shadow.mapSize.set(2048, 2048);
+spot.shadow.bias = -0.0004;
+spot.shadow.camera.near = 1;
+spot.shadow.camera.far = 20;
+scene.add(spot);
+scene.add(spot.target);
+
+// 第二束侧逆光（冷色）：勾勒人体和楼板的轮廓，让暗部不糊成一团
+const rim = new THREE.SpotLight(0x9fb6c8, 28);
+rim.position.set(-4.5, 3.5, -3.0);
+rim.target.position.set(0, 0.4, 0);
+rim.angle = Math.PI / 5;
+rim.penumbra = 0.7;
+rim.decay = 1.5;
+rim.distance = 20;
+scene.add(rim);
+scene.add(rim.target);
+
+// 一盏极弱的正面补光，确保转到背面时也"看得清"（硬要求）
+const fill = new THREE.DirectionalLight(0xc8d0d8, 0.35);
+fill.position.set(-2, 2, 4);
+scene.add(fill);
+
+/* =========================================================================
+   7. 漂浮粉尘粒子 —— 灾难现场的悬浮灰
+   用 Points 程序生成：在展台上方空间撒一批白点，缓慢下沉、循环。
+   只在光锥附近可见，强化"光柱里飘着灰"的现场感。
+   ========================================================================= */
+const dustCount = 600;
+const dustGeo = new THREE.BufferGeometry();
+const dustPos = new Float32Array(dustCount * 3);
+const dustSpd = new Float32Array(dustCount);
+for(let i = 0; i < dustCount; i++){
+  dustPos[i*3]   = (Math.random()-0.5)*6;
+  dustPos[i*3+1] = Math.random()*5;
+  dustPos[i*3+2] = (Math.random()-0.5)*6;
+  dustSpd[i] = 0.002 + Math.random()*0.006;
+}
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+const dustMat = new THREE.PointsMaterial({
+  color: 0xdfe2e6, size: 0.02, transparent: true, opacity: 0.5,
+  depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const dust = new THREE.Points(dustGeo, dustMat);
+scene.add(dust);
+
+/* =========================================================================
+   8. 后处理 —— 克制！只加"轻 bloom + 轻暗角"
+   硬要求：绝不准把画面弄黑。所以 bloom 阈值高、强度低；暗角很淡。
+   ========================================================================= */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.28, 0.6, 0.85);
+// 强度 0.28 很轻，只让聚光灯高光微微发光，不影响整体亮度
+composer.addPass(bloom);
+
+const vignette = new ShaderPass(VignetteShader);
+vignette.uniforms.offset.value = 1.05;   // 暗角范围：越大越靠边
+vignette.uniforms.darkness.value = 1.15; // 暗角浓度：克制，只压住四角
+composer.addPass(vignette);
+
+/* =========================================================================
+   9. 动画循环 + 窗口自适应
+   ========================================================================= */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 粉尘缓慢下沉，落到底就回到顶部循环（像现场一直在落灰）
+  const p = dustGeo.attributes.position.array;
+  for(let i = 0; i < dustCount; i++){
+    p[i*3+1] -= dustSpd[i];
+    p[i*3]   += Math.sin(t*0.3 + i)*0.0008; // 轻微横向飘动
+    if(p[i*3+1] < 0.02){ p[i*3+1] = 5; }
+  }
+  dustGeo.attributes.position.needsUpdate = true;
+
+  // 主聚光灯极轻微呼吸，像现场电力不稳的应急灯（增加紧张氛围）
+  spot.intensity = 90 + Math.sin(t * 1.7) * 4;
+
+  controls.update();
+  composer.render();
+}
+animate();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
