@@ -14,6 +14,18 @@
 <div id="hud"></div>
 <div id="info"></div>
 <div id="win">你 逃 出 来 了</div>
+<!-- 存活鉴定报告卡:通关后浮在"逃出室外"画面之上。这是把一次性体验变成"想重玩冲A+"的钩子——
+     给玩家一个可量化的成绩(用时/擦肩/是否躲对),并把真实救命知识焊在结算里。-->
+<div id="report" style="position:fixed;inset:0;z-index:26;display:none;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(6,10,14,.55),rgba(4,7,10,.9));font-family:'PingFang SC',sans-serif">
+  <div style="width:min(560px,88%);background:rgba(13,15,19,.9);border:1px solid rgba(255,223,90,.3);border-radius:16px;padding:28px 32px;box-shadow:0 24px 90px rgba(0,0,0,.75)">
+    <div style="text-align:center;color:#7CFF9B;font-size:14px;letter-spacing:7px">— 你 活 下 来 了 —</div>
+    <div id="rgrade" style="text-align:center;font-size:84px;font-weight:900;line-height:1.15;margin:2px 0;color:#7CFF9B">A</div>
+    <div id="rverdict" style="text-align:center;color:#d8d2c4;font-size:15.5px;margin-bottom:18px">　</div>
+    <div id="rrows" style="display:flex;flex-direction:column;gap:9px;font-size:14.5px"></div>
+    <div id="rfoot" style="margin-top:16px;padding-top:13px;border-top:1px solid rgba(255,255,255,.1);color:#8a98a4;font-size:12px;line-height:1.65">　</div>
+    <button id="rretry" style="display:block;width:100%;margin-top:18px;background:linear-gradient(180deg,#1f7a40,#0d4a23);color:#e6fff0;border:1px solid #2fae5e;padding:13px;font-size:17px;font-weight:800;letter-spacing:4px;border-radius:10px;cursor:pointer">↻ 再 逃 一 次 · 冲 击 A+</button>
+  </div>
+</div>
 <div id="obj" style="position:fixed;left:50%;top:7%;transform:translateX(-50%);color:#ffdf5a;font-size:19px;font-weight:700;text-shadow:0 0 14px #000;opacity:0;transition:opacity .3s;z-index:12;text-align:center;max-width:84%"></div>
 <div id="wake" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e8e2d6;font-size:26px;letter-spacing:4px;text-shadow:0 2px 12px #000;opacity:0;transition:opacity 1.2s;z-index:13;white-space:pre-line;text-align:center;pointer-events:none"></div>
 <div id="death" style="position:fixed;inset:0;background:linear-gradient(180deg,rgba(8,4,4,0) 26%,rgba(8,4,4,.5) 60%,rgba(8,4,4,.9) 100%);z-index:25;display:none;flex-direction:column;align-items:center;justify-content:flex-end;gap:12px;padding-bottom:6vh">
@@ -22,11 +34,12 @@
   <button id="dretry" style="background:linear-gradient(180deg,#d4321e,#8c1d14);color:#fff;border:none;padding:14px 44px;font-size:19px;font-weight:800;letter-spacing:4px;border-radius:10px;cursor:pointer;margin-top:8px">再 来 一 次</button>
 </div>
 <div id="start"><h2>余 震 · DROP</h2>
-<p><b style="color:#cdb">凌晨 4:12，一场地震把你从睡梦中震醒。</b><br>从二楼卧室逃出单元楼，活下去——把救命的本能，刻进身体。<br><br><b style="color:#9c6">WASD</b> 移动　·　<b style="color:#9c6">鼠标</b> 环顾四周　·　<b style="color:#9c6">ESC</b> 松开鼠标<br>地上亮起 <b style="color:#ff7">红圈</b> = 头顶马上要塌，<b>别停，快穿过去</b><br>穿过客厅 → 下楼梯 → 冲出 <b style="color:#7CFF9B">绿色单元门</b> = 生还<br><br>🎧 戴耳机 · 用电脑 Chrome，体验最佳</p>
+<p><b style="color:#cdb">凌晨 4:12，一场地震把你从睡梦中震醒。</b><br>从二楼卧室逃出单元楼，活下去——把救命的本能，刻进身体。<br><br><b style="color:#9c6">WASD</b> 移动　·　<b style="color:#9c6">鼠标</b> 环顾四周　·　<b style="color:#9c6">ESC</b> 松开鼠标<br><br>① 主震来时<b style="color:#ff7">别往外冲</b>——退到 <b style="color:#7CFF9B">绿色光圈</b>里蹲下护头，撑过去<br>② <b style="color:#ff7">红圈</b> = 头顶要塌，别停快穿过；<b style="color:#ff7">亮着的电梯别坐</b><br>③ 穿过客厅 → 下楼梯 → 冲出 <b style="color:#7CFF9B">绿色单元门</b> = 生还<br>逃出后会给你打分 <b style="color:#7CFF9B">A+~D</b>，看你能不能把命练成本能<br><br>🎧 戴耳机 · 用电脑 Chrome，体验最佳</p>
 <button id="b">▶ 醒 来</button></div>
 <script type="importmap">{ "imports": { "three":"./three.module.js" }}</script>
 <script type="module">
 import * as THREE from 'three';
+import { buildKitchenRoom, buildBathroomRoom, buildBalconyRoom, buildDiningRoom, buildStudyRoom, buildKidsRoom, buildStorageRoom, buildCorridorRoom, buildElevatorHall, buildNeighborHome } from './rooms.js';
 const app=document.getElementById('app');
 const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.08;app.appendChild(renderer.domElement);
@@ -1953,8 +1966,24 @@ const H=3, F1=-3.3, CW=2;   // 层高 / 一楼y / 走廊半宽
 // --- 卧室(x:-13~-5, z:-4~4) ---
 ground(8,0.3,8,-9,-0.15,0);            deco(8,0.2,8,-9,H,0);
 wallB(0.3,H,8,-13,H/2,0);              // 西墙
-wallB(8,H,0.3,-9,H/2,-4);              // 北墙
-wallB(8,H,0.3,-9,H/2,4);              // 南墙
+// 卧室北墙开门洞(x=-9 宽1.4)通往支线卫生间
+wallB(3.3,H,0.3,-11.35,H/2,-4); wallB(3.3,H,0.3,-6.65,H/2,-4);   // 门左/右段
+wallB(1.4,H-2.1,0.3,-9,H-(H-2.1)/2,-4);                          // 门楣(卫生间门高2.1)
+// === 支线卫生间(卧室北门→北侧,门+z对卧室北墙;科普:小开间承重多=相对安全躲避点) ===
+const BR=buildBathroomRoom(scene,THREE,-9,-5.5);
+{ ground(3.6,0.3,3.2,-9,-0.15,-5.4,BR.floorMat).visible=false;   // 碰撞地板(延伸到卧室接缝,无缝)
+  wallB(3.6,H,0.3,-9,H/2,-7,BR.wallMat).visible=false;           // 北墙
+  wallB(0.3,H,3,-7.2,H/2,-5.5,BR.wallMat).visible=false;         // 东墙
+  wallB(0.3,H,3,-10.8,H/2,-5.5,BR.wallMat).visible=false; }      // 西墙
+// 卧室南墙开门洞(x=-9)通往支线餐厅
+wallB(3.3,H,0.3,-11.35,H/2,4); wallB(3.3,H,0.3,-6.65,H/2,4);    // 门左/右段
+wallB(1.4,H-2.1,0.3,-9,H-(H-2.1)/2,4);                          // 门楣
+// === 支线餐厅(卧室南门→南侧,门-z对卧室南墙;科普:破除"躲餐桌下黄金三角"伪知识) ===
+const DN=buildDiningRoom(scene,THREE,-9,7.5);
+{ ground(8,0.3,7.2,-9,-0.15,7.4,DN.floorMat).visible=false;      // 碰撞地板
+  wallB(8,H,0.3,-9,H/2,11,DN.wallMat).visible=false;             // 餐厅最南墙(z=11)
+  wallB(0.3,H,7,-5,H/2,7.5,DN.wallMat).visible=false;            // 东墙
+  wallB(0.3,H,7,-13,H/2,7.5,DN.wallMat).visible=false; }         // 西墙
 wallB(0.3,H,(4-CW),-5,H/2,-(CW+(4-CW)/2)); // 东墙上段(留门 z∈[-2,2])
 wallB(0.3,H,(4-CW),-5,H/2, (CW+(4-CW)/2));  // 东墙下段
 warmLamp(-9,2.4,0);
@@ -1964,18 +1993,55 @@ try{ makeWardrobe(scene,THREE,-11.8,0,-2.5); }catch(e){ console.warn('wardrobe',
 try{ makeRubble(scene,THREE,-7,3,14); }catch(e){ console.warn('rubble',e); }
 // 走廊1(卧室→客厅) x[-5,0]
 ground(5,0.3,4,-2.5,-0.15,0); deco(5,0.2,4,-2.5,H,0);
-wallB(5,H,0.3,-2.5,H/2,-2); wallB(5,H,0.3,-2.5,H/2,2);
+wallB(5,H,0.3,-2.5,H/2,2);                                       // 走廊1南墙(完整)
+// 走廊1北墙开门洞(x=-2.5)通往支线储藏室
+wallB(1.8,H,0.3,-4.1,H/2,-2); wallB(1.8,H,0.3,-0.9,H/2,-2);     // 门左/右段
+wallB(1.4,H-2.2,0.3,-2.5,H-(H-2.2)/2,-2);                        // 门楣
+// === 支线储藏室(走廊1北门→北侧;科普:堆高杂物倒塌砸人+堵逃生路) ===
+const ST=buildStorageRoom(scene,THREE,-2.5,-4.5);
+{ ground(5,0.3,5.2,-2.5,-0.15,-4.4,ST.floorMat).visible=false;   // 碰撞地板
+  wallB(5,H,0.3,-2.5,H/2,-7,ST.wallMat).visible=false;           // 北墙
+  wallB(0.3,H,5,0,H/2,-4.5,ST.wallMat).visible=false;            // 东墙
+  wallB(0.3,H,5,-5,H/2,-4.5,ST.wallMat).visible=false; }         // 西墙
 warmLamp(-2.5,2.4,0);
 // 客厅(主路径穿过) x[0,9] z[-4,4],西门x=0/东门x=9(z[-2,2])。质感=test_livingroom 破败客厅原样搬入(见 buildLivingRoom)
 const LR=buildLivingRoom(4.5);            // 4.5=客厅中心x;生成 test 质感材质 + 摆入全部家具/碎物/灰尘/点光
 ground(9,0.3,8,4.5,-0.15,0,LR.floorMat);  // 地板:碰撞骨架(grounds)+test 脏旧木纹
 deco(9,0.2,8,4.5,H,0,LR.ceilMat);         // 天花板:test 灰白脏顶
-wallB(9,H,0.3,4.5,H/2,-4,LR.wallMat); wallB(9,H,0.3,4.5,H/2,4,LR.wallMat);  // 南北墙:test 裂纹+水渍质感
+// 客厅南墙开门洞(x=4.5)通往支线阳台
+wallB(3.8,H,0.3,1.9,H/2,4,LR.wallMat); wallB(3.8,H,0.3,7.1,H/2,4,LR.wallMat);  // 门左/右段
+wallB(1.4,H-2.1,0.3,4.5,H-(H-2.1)/2,4,LR.wallMat);                          // 门楣
+// === 支线阳台(客厅南门→南侧,门-z对客厅南墙;科普:地震绝对别去阳台-悬挑结构最易塌) ===
+const BL=buildBalconyRoom(scene,THREE,4.5,6.5);
+{ ground(7,0.3,5.2,4.5,-0.15,6.4,BL.floorMat).visible=false;     // 碰撞地板(延伸到客厅接缝)
+  wallB(0.3,H,5,8,H/2,6.5,BL.wallMat).visible=false;             // 东墙
+  wallB(0.3,H,5,1,H/2,6.5,BL.wallMat).visible=false;             // 西墙
+  wallB(7,1.2,0.3,4.5,0.6,9,BL.wallMat).visible=false; }         // 朝外女儿墙(矮,防玩家坠出阳台)
+// 客厅北墙开门洞(x=4.5 宽1.4)通往支线厨房——拆成门左/右段+门楣
+wallB(3.8,H,0.3,1.9,H/2,-4,LR.wallMat); wallB(3.8,H,0.3,7.1,H/2,-4,LR.wallMat);
+wallB(1.4,H-2.2,0.3,4.5,H-(H-2.2)/2,-4,LR.wallMat);                         // 门楣
+// === 支线厨房(客厅北门 → 北侧厨房,迷宫支线探索) ===
+const KT=buildKitchenRoom(scene,THREE,4.5,-6.0);                            // 厨房中心,南墙门洞贴客厅北墙 z=-4
+{ // 厨房碰撞层(函数只画视觉,这里加 visible=false 的"能踩能撞"层;厨房宽5深4,中心x4.5 z-6)
+  const g=ground(5,0.3,4.2,4.5,-0.15,-5.9,KT.floorMat); g.visible=false;    // 地板(延伸到客厅接缝处,无缝可走)
+  const a=wallB(5,H,0.3,4.5,H/2,-8,KT.wallMat); a.visible=false;            // 厨房北墙
+  const b=wallB(0.3,H,4,7,H/2,-6,KT.wallMat); b.visible=false;              // 厨房东墙
+  const c=wallB(0.3,H,4,2,H/2,-6,KT.wallMat); c.visible=false;              // 厨房西墙
+}
 wallB(0.3,H,2,0,H/2,-3,LR.wallMat); wallB(0.3,H,2,0,H/2,3,LR.wallMat);      // 西墙(留门 z[-2,2] 接走廊1)
 wallB(0.3,H,2,9,H/2,-3,LR.wallMat); wallB(0.3,H,2,9,H/2,3,LR.wallMat);      // 东墙(留门 z[-2,2] 接走廊2)
 // 走廊2(客厅→楼梯) x[9,15]
 ground(6,0.3,4,12,-0.15,0); deco(6,0.2,4,12,H,0);
-wallB(6,H,0.3,12,H/2,-2); wallB(6,H,0.3,12,H/2,2);
+wallB(6,H,0.3,12,H/2,2);                                         // 走廊2南墙(完整)
+// 走廊2北墙开门洞(x=12)通往支线儿童房
+wallB(2.3,H,0.3,10.15,H/2,-2); wallB(2.3,H,0.3,13.85,H/2,-2);   // 门左/右段
+wallB(1.4,H-2.2,0.3,12,H-(H-2.2)/2,-2);                          // 门楣
+// === 支线儿童房(走廊2北门→北侧;护住孩子头颈+情感冲击) ===
+const KR=buildKidsRoom(scene,THREE,12,-5.5);
+{ ground(7,0.3,7.2,12,-0.15,-5.4,KR.floorMat).visible=false;     // 碰撞地板
+  wallB(7,H,0.3,12,H/2,-9,KR.wallMat).visible=false;             // 北墙
+  wallB(0.3,H,7,15.5,H/2,-5.5,KR.wallMat).visible=false;         // 东墙
+  wallB(0.3,H,7,8.5,H/2,-5.5,KR.wallMat).visible=false; }        // 西墙
 warmLamp(12,2.4,0);
 // 楼梯 x[15,20] 下楼
 const SN=9, SR=(0-F1)/SN, SRUN=(20-15)/SN;
@@ -2012,6 +2078,41 @@ let phase='wake', shake=0, quakeT=0, hazards=[], sinceSpawn=0;
 //   bgBak/fogBak 备份正常游戏的天空/雾(过场会改氛围),复活/重开时还原。cinemaT=过场累计秒(驱动落灰等)。
 let deathFx=null,exitFx=null,bgBak=null,fogBak=null,cinemaT=0;
 const startPos=new THREE.Vector3(-9,EYE,0);
+// ===== 存活鉴定数据(贯穿一局,通关后据此打分) =====
+// 把一局里"做对/做错了什么"记进这个对象;通关时 showReport() 读它算 A+~D 评级。
+//   quakeMs/escapeMs : 地震开始 / 逃出门 的时间戳(算逃生用时)
+//   nearMiss         : 与坠落物擦肩而过(没砸死但很险)的次数
+//   tookCover        : 主震时是否就近躲避护头(关①设置,null=该关未触发)
+//   elevatorAvoided  : 是否避开电梯走楼梯(关③设置,null=未触发)
+let stats={quakeMs:0,escapeMs:0,nearMiss:0,tookCover:null,elevatorAvoided:null};
+function resetStats(){stats={quakeMs:0,escapeMs:0,nearMiss:0,tookCover:null,elevatorAvoided:null};}
+// ===== 关①:主震"趴下·遮挡·稳住"(Drop, Cover, Hold On) =====
+// 地震真实守则:剧烈摇晃中最危险的动作就是站起来往外跑。本关把这条焊进身体——
+//   主震(MAIN_SHOCK 秒)期间必须退到床边"安全圈"蹲住护头;暴露在外=密集坠物砸落=死。
+const MAIN_SHOCK=6;                  // 主震持续秒数:这段时间必须就近躲避,不能往外冲
+const SAFE={x:-8.6,z:-1.6,r:1.35};   // 床边安全位(刻意避开会倒的高衣柜):蹲这儿护头=活
+let coverHeld=0,mainShockDone=false; // coverHeld=已在安全圈蹲了多久;mainShockDone=主震是否已结束(一次性切换守卫)
+// 安全圈地面标记:绿色脉动光环(区别于红色危险圈),告诉玩家"蹲这里"
+// safeGroup=不旋转的父容器(整体控制显隐);内含平铺的发光环 + 一束朝上的淡绿光柱。
+const safeGroup=new THREE.Group();safeGroup.position.set(SAFE.x,0.06,SAFE.z);safeGroup.visible=false;scene.add(safeGroup);
+const safeMarker=new THREE.Mesh(new THREE.RingGeometry(0.72,1.12,40),new THREE.MeshBasicMaterial({color:0x4dffa6,transparent:true,opacity:.75,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,depthWrite:false}));
+safeMarker.rotation.x=-Math.PI/2;safeGroup.add(safeMarker);   // 环平铺在地(脉动靠 safeMarker.material.opacity)
+const safeBeam=new THREE.Mesh(new THREE.CylinderGeometry(0.92,0.7,2.6,24,1,true),new THREE.MeshBasicMaterial({color:0x39ff9b,transparent:true,opacity:.12,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,depthWrite:false}));
+safeBeam.position.y=1.3;safeGroup.add(safeBeam);              // 竖直光柱:像"站这儿"的指引光,远处也能一眼看到
+// ===== 关③:电梯诱惑(地震绝不能坐电梯) =====
+// 真实知识:地震时电梯会瞬间断电、井道变形把人卡死,是逃生大忌。本关在走廊2北墙放一部"还亮着"的电梯,
+//   呼叫按钮脉动发光引诱你靠近;一旦走进它=坠入断电卡死的铁棺材(die)。绕开走楼梯=报告卡记一笔"明智"。
+const ELEV={x:12,z:-1.5,r:1.0};   // 电梯触发点:贴北墙(z=-2)电梯门前;玩家正常沿z≈0走过=安全,主动凑近才中招
+let elevBtn=null;                  // 呼叫按钮(脉动发光用)
+(function buildElevator(){
+  const wz=-1.98;                  // 贴 corridor2 北墙内侧
+  const frameMat=new THREE.MeshStandardMaterial({color:0x26282c,roughness:0.5,metalness:0.85});
+  const doorMat=new THREE.MeshStandardMaterial({color:0x3a3d42,roughness:0.32,metalness:0.92});
+  const fr=new THREE.Mesh(new THREE.BoxGeometry(1.74,2.34,0.16),frameMat);fr.position.set(ELEV.x,1.17,wz);fr.castShadow=true;scene.add(fr);
+  const dark=new THREE.Mesh(new THREE.BoxGeometry(1.32,2.02,0.05),new THREE.MeshStandardMaterial({color:0x040406,roughness:1}));dark.position.set(ELEV.x,1.12,wz+0.04);scene.add(dark); // 门内黑暗竖井
+  for(const s of [-1,1]){const d=new THREE.Mesh(new THREE.BoxGeometry(0.6,2.0,0.08),doorMat);d.position.set(ELEV.x+s*0.46,1.12,wz+0.1);d.castShadow=true;scene.add(d);} // 两扇半开金属门
+  elevBtn=new THREE.Mesh(new THREE.CircleGeometry(0.075,18),new THREE.MeshBasicMaterial({color:0xffb020}));elevBtn.position.set(ELEV.x+1.0,1.25,wz+0.12);scene.add(elevBtn); // 发光呼叫按钮(诱惑)
+})();
 // WebAudio 地鸣
 let ac=null,rg=null;
 function initAudio(){try{ac=new(window.AudioContext||window.webkitAudioContext)();}catch(e){return;}rg=ac.createGain();rg.gain.value=0;rg.connect(ac.destination);const o=ac.createOscillator();o.type='sine';o.frequency.value=42;o.connect(rg);o.start();const n=ac.createBufferSource();const b=ac.createBuffer(1,ac.sampleRate*2,ac.sampleRate);const d=b.getChannelData(0);let l=0;for(let i=0;i<d.length;i++){const w=Math.random()*2-1;d[i]=(l+0.02*w)/1.02;l=d[i];d[i]*=3.3;}n.buffer=b;n.loop=true;const f=ac.createBiquadFilter();f.type='lowpass';f.frequency.value=180;n.connect(f);f.connect(rg);n.start();}
@@ -2026,12 +2127,43 @@ function spawnHazard(){const hx=player.x+(Math.random()-0.5)*4,hz=player.z+(Math
   const ob=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.3,0.4),mHaz);ob.position.set(hx,player.y-EYE+3,hz);ob.castShadow=true;scene.add(ob);
   hazards.push({warn,ob,hx,hz,baseY:player.y-EYE,t:0,fall:false,vy:0,done:false});}
 function clearHazards(){hazards.forEach(h=>{scene.remove(h.warn);scene.remove(h.ob);});hazards=[];}
-function die(reason,short){if(phase==='dead')return;phase='dead';rumble(0.15);if(locked)document.exitPointerLock();
+function die(reason,short,advice){if(phase==='dead')return;phase='dead';rumble(0.15);if(locked)document.exitPointerLock();
   bgBak=scene.background;fogBak=scene.fog;                          // 备份氛围(死亡场景会把世界改成暗房)
   deathFx=buildDeathScene(scene,THREE,short||'被坠落物砸中');       // 建法医暗房死亡展台(聚光照人被楼板压)
   deathFx.group.position.set(0,-120,0);cinemaT=0;                   // 搬到地下深处,远离游戏房间=不穿帮
-  O('dreason').innerHTML=reason+'<br><b style=color:#7CFF9B>正确做法:护住头颈,远离会掉落的天花板,快速移动到安全处</b>';O('death').style.display='flex';}
-function startGame(){phase='wake';won=false;quakeT=0;shake=0;clearHazards();player.copy(startPos);yaw=-Math.PI/2;pitch=-0.05;
+  // advice=死后教的"正确做法";不传则用通用版(防坠物)。电梯死等场景传专属正解,教对知识。
+  O('dreason').innerHTML=reason+'<br><b style=color:#7CFF9B>正确做法:'+(advice||'护住头颈,远离会掉落的天花板,快速移动到安全处')+'</b>';O('death').style.display='flex';}
+// ===== 存活鉴定报告 =====
+// 通关后调用:读 stats 算出 A+~D 评级,逐条列出做对/做错,并把真实救命知识焊在结算页。
+// 设计意图:让"逃出去"不只是结束,而是一次"被打分"——分不满意就想再逃一次冲 A+,这就是复玩动力。
+function showReport(){
+  const sec=Math.max(0,(stats.escapeMs-stats.quakeMs)/1000);   // 逃生用时(秒)
+  // ---- 评分:满分100,按犯错扣分 ----
+  let score=100;
+  score-=stats.nearMiss*11;                          // 每次与坠落物擦肩 -11
+  if(sec>22)score-=Math.min(28,(sec-22)*1.1);        // 慢于22秒开始扣(磨蹭=危险)
+  if(stats.tookCover===false)score-=26;              // 主震时乱跑没躲(关①触发)
+  if(stats.tookCover===true)score+=4;                // 躲对了加分
+  score=Math.max(20,Math.min(100,Math.round(score)));
+  // ---- 分数→评级+颜色+一句点评 ----
+  const g=score>=95?['A+','#7CFF9B','教科书级。你的身体已经记住了。']
+        :score>=84?['A','#9be37a','非常好。真地震里你大概率能活下来。']
+        :score>=70?['B','#ffdf5a','活下来了,但有几次太险,再练练。']
+        :score>=56?['C','#ffb347','惊险过关。换作真地震,这么跑很危险。']
+        :['D','#ff6a5a','你是靠运气活下来的。再来一次,这次别慌。'];
+  O('rgrade').textContent=g[0];O('rgrade').style.color=g[1];O('rverdict').textContent=g[2];
+  // ---- 逐条成绩(只显示本局触发过的关卡) ----
+  const rows=[];
+  rows.push(['⏱ 逃生用时',sec.toFixed(1)+' 秒',sec<=20]);
+  rows.push([(stats.nearMiss===0?'🛡 ':'⚠ ')+'与坠落物擦肩',stats.nearMiss+' 次',stats.nearMiss===0]);
+  if(stats.tookCover!==null)rows.push(['主震时就近躲避护头',stats.tookCover?'做到了':'你直接往外冲了',stats.tookCover]);
+  if(stats.elevatorAvoided!==null)rows.push(['走楼梯而非电梯',stats.elevatorAvoided?'明智':'险些致命',stats.elevatorAvoided]);
+  O('rrows').innerHTML=rows.map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 13px;background:rgba(255,255,255,.04);border-left:3px solid ${r[2]?'#2fae5e':'#d4321e'};border-radius:6px"><span>${r[0]}</span><b style="color:${r[2]?'#9be37a':'#ff8a7a'}">${r[1]}</b></div>`).join('');
+  O('rfoot').innerHTML='📌 <b style="color:#cdb">「趴下·遮挡·稳住」</b>(Drop, Cover, Hold On) 是国际通用地震守则。多数伤亡来自晃动中乱跑被坠物砸中——先就近护头,别急着冲出去。&nbsp;—&nbsp;据 USGS / FEMA';
+  O('report').style.display='flex';
+}
+O('rretry').onclick=()=>{startGame();renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();};
+function startGame(){phase='wake';won=false;quakeT=0;shake=0;clearHazards();player.copy(startPos);yaw=-Math.PI/2;pitch=-0.05;resetStats();coverHeld=0;mainShockDone=false;safeGroup.visible=false;O('report').style.display='none';
   if(deathFx){deathFx.dispose();deathFx=null;}                      // 清死亡展台(释放显存)
   if(exitFx){scene.remove(exitFx.root);exitFx=null;}               // 清室外结局
   if(bgBak!==null){scene.background=bgBak;bgBak=null;}             // 还原正常游戏天空
@@ -2039,7 +2171,7 @@ function startGame(){phase='wake';won=false;quakeT=0;shake=0;clearHazards();play
   renderer.toneMappingExposure=1.08;                              // 还原正常游戏曝光(通关时曾调亮看室外)
   O('death').style.display='none';O('win').style.display='none';
   wakeMsg('凌晨 4:12……\n地面在震动。');
-  setTimeout(()=>{if(phase!=='wake')return;phase='quake';crash();rumble(0.85);setObj('⚠ 地震了!快往东逃出去——躲开砸下来的东西!');},2600);}
+  setTimeout(()=>{if(phase!=='wake')return;phase='quake';crash();rumble(0.9);stats.quakeMs=performance.now();setObj('🚨 地震!别往外冲——退到床边发光圈蹲下,护住头颈!');},2600);}
 const downRay=new THREE.Raycaster(),wallRay=new THREE.Raycaster();
 renderer.domElement.addEventListener('click',()=>{if(!locked&&!won)renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();});
 document.addEventListener('pointerlockchange',()=>locked=document.pointerLockElement===renderer.domElement);
@@ -2049,9 +2181,18 @@ document.getElementById('b').onclick=()=>{initAudio();document.getElementById('s
 O('dretry').onclick=()=>{startGame();renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();};
 function canMove(from,to){const dir=new THREE.Vector3().subVectors(to,from);const dist=dir.length();if(dist<1e-5)return true;dir.normalize();
   wallRay.set(new THREE.Vector3(from.x,from.y-0.7,from.z),dir);wallRay.far=dist+0.3;return wallRay.intersectObjects(walls,false).length===0;}
-// 调试钩子(__walk/__view/__die)已于交付前移除
+// 【开发期调试钩子,10 个房间全集成完/最终交付前再删】__walk 验主路径连续,__view 瞬移相机验收支线房间
+window.__walk=()=>{let p=player.clone(),logs=[];for(let i=0;i<420;i++){const to=new THREE.Vector3(p.x+0.1,p.y,p.z);if(canMove(p,to))p.x=to.x;else{logs.push("卡墙@x="+p.x.toFixed(1));break;}downRay.set(new THREE.Vector3(p.x,p.y+1.8,p.z),new THREE.Vector3(0,-1,0));downRay.far=12;const h=downRay.intersectObjects(grounds,false);if(h.length)p.y=h[0].point.y+EYE;else{logs.push("掉地板@x="+p.x.toFixed(1));break;}}return JSON.stringify({finalX:+p.x.toFixed(1),finalY:+p.y.toFixed(2),reachedExit:Math.abs(p.x-28.5)<2.2,logs});};
+window.__view=(x,z,y2,p2)=>{player.set(x,EYE,z);yaw=y2;if(p2!==undefined)pitch=p2;};
+// [临时调试钩子·交付前删] 仅供 CDP 截图验证:直接唤出鉴定报告/捕获报错
+window.__err=null;addEventListener('error',e=>{window.__err=(e.message||'')+' @'+(e.lineno||'?');});
+window.__report=(opt)=>{const o=opt||{};stats.quakeMs=performance.now()-((o.sec||13.4)*1000);stats.escapeMs=performance.now();stats.nearMiss=(o.nearMiss!=null?o.nearMiss:1);stats.tookCover=(o.tookCover!==undefined?o.tookCover:true);stats.elevatorAvoided=(o.elevatorAvoided!==undefined?o.elevatorAvoided:true);showReport();return'ok';};
+window.__dbg=(o)=>{o=o||{};document.getElementById('start').style.display='none';if(o.phase)phase=o.phase;if(o.quakeT!=null)quakeT=o.quakeT;if(o.coverHeld!=null)coverHeld=o.coverHeld;if(o.mainShockDone!=null)mainShockDone=o.mainShockDone;if(o.px!=null)player.x=o.px;if(o.pz!=null)player.z=o.pz;if(o.yaw!=null)yaw=o.yaw;return JSON.stringify({phase,quakeT:+(+quakeT).toFixed(2),obj:O('obj').textContent,marker:safeGroup.visible,tookCover:stats.tookCover,coverHeld:+coverHeld.toFixed(2),err:window.__err});};
+// 手动跑一帧游戏逻辑(绕过被节流的rAF):用真实 stepGame(dt) 推进 n 步,再手动渲染。可验证主震循环/提示切换/tookCover。
+window.__step=(o)=>{o=o||{};document.getElementById('start').style.display='none';const dt=o.dt||0.05,n=o.n||1;if(o.px!=null)player.x=o.px;if(o.pz!=null)player.z=o.pz;if(o.yaw!=null)yaw=o.yaw;if(o.pitch!=null)pitch=o.pitch;for(let i=0;i<n;i++)stepGame(dt);renderer.render(scene,camera);return JSON.stringify({phase,quakeT:+(+quakeT).toFixed(2),obj:O('obj').textContent,marker:safeGroup.visible,tookCover:stats.tookCover,coverHeld:+coverHeld.toFixed(2),hazards:hazards.length,won,err:window.__err});};
 const clock=new THREE.Clock();
-function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),0.05);
+// stepGame(dt):一帧游戏逻辑(移动/地面跟随/地震/坠落物/通关/渲染)。抽出来便于手动单步验证;animate 负责 rAF 节奏。
+function stepGame(dt){
   if((phase==='quake'||phase==='wake')&&(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD'])){const sp=3.4*dt;const e=new THREE.Euler(0,yaw,0,'YXZ');const fwd=new THREE.Vector3(0,0,-1).applyEuler(e),rgt=new THREE.Vector3(1,0,0).applyEuler(e);
     let mv=new THREE.Vector3();if(keys['KeyW'])mv.add(fwd);if(keys['KeyS'])mv.sub(fwd);if(keys['KeyA'])mv.sub(rgt);if(keys['KeyD'])mv.add(rgt);
     if(mv.lengthSq()>0){mv.normalize().multiplyScalar(sp);
@@ -2060,7 +2201,7 @@ function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDel
   downRay.set(new THREE.Vector3(player.x,player.y+1.8,player.z),new THREE.Vector3(0,-1,0));downRay.far=12;
   const hit=downRay.intersectObjects(grounds,false);
   if(hit.length)player.y+=(hit[0].point.y+EYE-player.y)*Math.min(dt*10,1);
-  let tg=phase==='quake'?0.22:0;tg*=(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD'])?1.3:0.7;shake+=(tg-shake)*Math.min(dt*4,1);const sk=shake;
+  let tg=phase==='quake'?(quakeT<MAIN_SHOCK?0.36:0.22):0;tg*=(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD'])?1.3:0.7;shake+=(tg-shake)*Math.min(dt*4,1);const sk=shake;
   if(phase==='dead'&&deathFx){          // 死亡:相机切到地下死亡展台,俯视聚光下被压的人
     cinemaT+=dt;deathFx.update(cinemaT);
     camera.position.set(4.2,-117.0,5.6);camera.rotation.set(0,0,0);camera.lookAt(0,-119.5,0);
@@ -2071,18 +2212,45 @@ function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDel
     camera.position.set(player.x+Math.sin(performance.now()*0.037)*0.04*sk,player.y+Math.cos(performance.now()*0.043)*0.04*sk,player.z+Math.sin(performance.now()*0.029)*0.03*sk);
     camera.rotation.order='YXZ';camera.rotation.y=yaw+Math.cos(performance.now()*0.027)*0.012*sk;camera.rotation.x=pitch+Math.sin(performance.now()*0.031)*0.012*sk;camera.rotation.z=Math.sin(performance.now()*0.053)*0.03*sk;
   }
-  // 地震:坠落危险
-  if(phase==='quake'&&!won){quakeT+=dt;sinceSpawn+=dt;if(sinceSpawn>1.3){sinceSpawn=0;spawnHazard();}
+  // 地震:① 主震(必须就近躲避护头) → ② 余震逃生(往东撤离,躲坠落物)
+  if(phase==='quake'&&!won){quakeT+=dt;
+    if(quakeT<MAIN_SHOCK){                                 // —— ① 主震:Drop, Cover, Hold On ——
+      safeGroup.visible=true;
+      safeMarker.material.opacity=0.35+0.3*Math.sin(performance.now()*0.006);   // 脉动呼吸,吸引注意
+      const inSafe=Math.hypot(player.x-SAFE.x,player.z-SAFE.z)<SAFE.r;
+      if(inSafe){                                          // 蹲对了:安全,显示撑过主震的倒计时
+        coverHeld+=dt;if(coverHeld>2.5)stats.tookCover=true;
+        setObj('🛡 稳住!护住头颈,撑过主震… '+Math.ceil(MAIN_SHOCK-quakeT)+'s');
+      }else{                                               // 暴露在外:头顶密集坠物砸落(0.5秒一个)=逼你进圈
+        setObj('🚨 地震!别往外冲——退到发光圈蹲下,护住头颈!');
+        sinceSpawn+=dt;if(sinceSpawn>0.5){sinceSpawn=0;spawnHazard();}
+      }
+    }else{                                                 // —— ② 余震逃生:恢复原玩法 ——
+      if(!mainShockDone){mainShockDone=true;safeGroup.visible=false;if(stats.tookCover===null)stats.tookCover=false;
+        setObj('✅ 主震过去!趁余震间隙,快往东冲出单元楼!');rumble(0.5);}
+      sinceSpawn+=dt;if(sinceSpawn>1.3){sinceSpawn=0;spawnHazard();}
+    }
     for(const h of hazards){if(h.done)continue;h.t+=dt;
       if(!h.fall){h.warn.material.opacity=0.4+0.4*Math.sin(h.t*12);if(h.t>1.1){h.fall=true;scene.remove(h.warn);}}
-      else{h.vy-=dt*16;h.ob.position.y+=h.vy*dt;h.ob.rotation.x+=dt*3;if(h.ob.position.y<=h.baseY+0.2){h.ob.position.y=h.baseY+0.2;h.done=true;crash();if(Math.hypot(player.x-h.hx,player.z-h.hz)<0.85&&Math.abs(player.y-EYE-h.baseY)<1.5)die('被坠落的天花板碎块砸中。','被坠落的天花板砸中');}}}}
+      else{h.vy-=dt*16;h.ob.position.y+=h.vy*dt;h.ob.rotation.x+=dt*3;if(h.ob.position.y<=h.baseY+0.2){h.ob.position.y=h.baseY+0.2;h.done=true;crash();
+        const dHaz=Math.hypot(player.x-h.hx,player.z-h.hz),sameFloor=Math.abs(player.y-EYE-h.baseY)<1.8;
+        if(dHaz<0.85&&Math.abs(player.y-EYE-h.baseY)<1.5)die('被坠落的天花板碎块砸中。','被坠落的天花板砸中');
+        else if(dHaz<2.3&&sameFloor)stats.nearMiss++;   // 没砸死但落点很近=与死神擦肩,计入鉴定
+      }}}}
+  // 关③:电梯诱惑——发亮的电梯井在召唤;走近=坠入断电卡死的铁棺材,绕开走楼梯=明智
+  if(elevBtn)elevBtn.material.color.setRGB(1,0.55+0.35*Math.sin(performance.now()*0.005),0.08); // 按钮脉动发光
+  if(phase==='quake'&&!won&&stats.elevatorAvoided===null){
+    if(Math.hypot(player.x-ELEV.x,player.z-ELEV.z)<ELEV.r){stats.elevatorAvoided=false;die('你冲进了电梯——地震中电梯会瞬间断电、井道变形卡死,变成下不去也出不来的铁棺材。','坠入电梯井','地震时永远走楼梯,绝不坐电梯——电梯一断电就成了出不来的铁棺材。');}
+    else if(player.x>16){stats.elevatorAvoided=true;setObj('✓ 没坐电梯,明智!地震时电梯随时断电卡死——永远走楼梯下去。');} // 上了楼梯=避开了电梯
+  }
   if(!won&&Math.hypot(player.x-EXIT.x,player.z-EXIT.z)<1.8){won=true;
     bgBak=scene.background;fogBak=scene.fog;scene.fog=null;          // 关雾,别让室内浓雾染暗明亮室外
     exitFx=buildExterior(scene,THREE,0,-120,140);cinemaT=0;          // 室外楼建在地下远处独立区,相机切过去
     renderer.toneMappingExposure=1.55;                              // 室外是明亮白天,临时调高曝光(重开还原1.08)
-    if(locked)document.exitPointerLock();document.getElementById('win').style.display='flex';}
+    if(locked)document.exitPointerLock();stats.escapeMs=performance.now();setTimeout(showReport,1500);}  // 先看一眼逃出的楼,再浮出鉴定报告
   document.getElementById('info').textContent='y='+player.y.toFixed(2)+' | x='+player.x.toFixed(1)+' z='+player.z.toFixed(1)+' | '+(player.y<-1?'一楼':'二楼');
   renderer.render(scene,camera);}
+function animate(){requestAnimationFrame(animate);stepGame(Math.min(clock.getDelta(),0.05));}
 animate();
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
 </script></body></html>
