@@ -1324,26 +1324,36 @@ warmLamp(-9,2.4,0);
 try{ makeBed(scene,THREE,-9,0,-2.2); }catch(e){ console.warn('bed',e); }
 try{ makeWardrobe(scene,THREE,-11.8,0,-2.5); }catch(e){ console.warn('wardrobe',e); }
 try{ makeRubble(scene,THREE,-7,3,14); }catch(e){ console.warn('rubble',e); }
-// --- 走廊(x:-5~14, z:-2~2) 一整条连续地板 ---
-ground(19,0.3,4,4.5,-0.15,0);          deco(19,0.2,4,4.5,H,0);
-wallB(19,H,0.3,4.5,H/2,-2);            // 走廊北墙
-wallB(19,H,0.3,4.5,H/2,2);            // 走廊南墙
-warmLamp(0,2.4,0);warmLamp(7,2.4,0);warmLamp(13,2.4,0);
-// --- 楼梯(x:14~19, 往东下楼 y:0→F1) 9级 ---
-const SN=9, SR=(0-F1)/SN, SRUN=(19-14)/SN;
-for(let i=0;i<SN;i++){ const topY=-(i+1)*SR; const x=14+0.27+i*SRUN;
+// 走廊1(卧室→客厅) x[-5,0]
+ground(5,0.3,4,-2.5,-0.15,0); deco(5,0.2,4,-2.5,H,0);
+wallB(5,H,0.3,-2.5,H/2,-2); wallB(5,H,0.3,-2.5,H/2,2);
+warmLamp(-2.5,2.4,0);
+// 客厅(主路径穿过) x[0,9] z[-4,4],西门x=0/东门x=9(z[-2,2])
+ground(9,0.3,8,4.5,-0.15,0); deco(9,0.2,8,4.5,H,0);
+wallB(9,H,0.3,4.5,H/2,-4); wallB(9,H,0.3,4.5,H/2,4);
+wallB(0.3,H,2,0,H/2,-3); wallB(0.3,H,2,0,H/2,3);
+wallB(0.3,H,2,9,H/2,-3); wallB(0.3,H,2,9,H/2,3);
+warmLamp(2,2.4,-2); warmLamp(7,2.4,2);
+// 客厅简单家具(精细buildLivingRoom随后填),靠墙不挡 z=0 穿行
+const mSofa=new THREE.MeshStandardMaterial({color:0xb86a3a,roughness:.9});
+deco(2.6,0.5,1,3,0.4,3.2,mSofa); deco(2.6,0.45,0.3,3,0.95,3.65,mSofa);
+deco(1.2,0.4,0.7,3,0.35,1.6); deco(1.6,0.9,0.12,3,1.2,-3.75);
+// 走廊2(客厅→楼梯) x[9,15]
+ground(6,0.3,4,12,-0.15,0); deco(6,0.2,4,12,H,0);
+wallB(6,H,0.3,12,H/2,-2); wallB(6,H,0.3,12,H/2,2);
+warmLamp(12,2.4,0);
+// 楼梯 x[15,20] 下楼
+const SN=9, SR=(0-F1)/SN, SRUN=(20-15)/SN;
+for(let i=0;i<SN;i++){ const topY=-(i+1)*SR; const x=15+0.27+i*SRUN;
   ground(SRUN+0.02,0.3,4,x,topY-0.15,0,mStep); }
-wallB((19-14),H,0.3,16.5,H/2-1.5,-2);  // 楼梯井北墙(下沉)
-wallB((19-14),H,0.3,16.5,H/2-1.5,2);  // 楼梯井南墙
-warmLamp(16.5,1.0,0);
-// --- 一楼走廊(x:19~28, z:-2~2, y=F1) ---
-ground(9,0.3,4,23.5,F1-0.15,0);        deco(9,0.2,4,23.5,F1+H,0);
-wallB(9,H,0.3,23.5,F1+H/2,-2);
-wallB(9,H,0.3,23.5,F1+H/2,2);
-warmLamp(22,F1+2.4,0);warmLamp(26,F1+2.4,0);
-// 单元门(一楼东端 x=28,绿色) — 走到=通关
-deco(0.3,2.4,3,28,F1+1.2,0,mExit);
-const EXIT={x:27.5,z:0};
+wallB((20-15),H,0.3,17.5,H/2-1.5,-2); wallB((20-15),H,0.3,17.5,H/2-1.5,2);
+warmLamp(17.5,1.0,0);
+// 一楼 x[20,29]
+ground(9,0.3,4,24.5,F1-0.15,0); deco(9,0.2,4,24.5,F1+H,0);
+wallB(9,H,0.3,24.5,F1+H/2,-2); wallB(9,H,0.3,24.5,F1+H/2,2);
+warmLamp(23,F1+2.4,0); warmLamp(27,F1+2.4,0);
+deco(0.3,2.4,3,29,F1+1.2,0,mExit);
+const EXIT={x:28.5,z:0};
 
 // ============ 第一人称 + 射线地面跟随 + 墙碰撞 ============
 const EYE=1.6;
@@ -1379,7 +1389,7 @@ document.getElementById('b').onclick=()=>{initAudio();document.getElementById('s
 O('dretry').onclick=()=>{startGame();renderer.domElement.requestPointerLock&&renderer.domElement.requestPointerLock();};
 function canMove(from,to){const dir=new THREE.Vector3().subVectors(to,from);const dist=dir.length();if(dist<1e-5)return true;dir.normalize();
   wallRay.set(new THREE.Vector3(from.x,from.y-0.7,from.z),dir);wallRay.far=dist+0.3;return wallRay.intersectObjects(walls,false).length===0;}
-window.__walk=()=>{let p=player.clone(),logs=[];for(let i=0;i<420;i++){const to=new THREE.Vector3(p.x+0.1,p.y,p.z);if(canMove(p,to))p.x=to.x;else{logs.push("卡墙@x="+p.x.toFixed(1));break;}downRay.set(new THREE.Vector3(p.x,p.y+1.8,p.z),new THREE.Vector3(0,-1,0));downRay.far=12;const h=downRay.intersectObjects(grounds,false);if(h.length)p.y=h[0].point.y+EYE;else{logs.push("掉地板@x="+p.x.toFixed(1));break;}}return JSON.stringify({finalX:+p.x.toFixed(1),finalY:+p.y.toFixed(2),reachedExit:Math.abs(p.x-27.5)<2.2,logs});};
+window.__walk=()=>{let p=player.clone(),logs=[];for(let i=0;i<420;i++){const to=new THREE.Vector3(p.x+0.1,p.y,p.z);if(canMove(p,to))p.x=to.x;else{logs.push("卡墙@x="+p.x.toFixed(1));break;}downRay.set(new THREE.Vector3(p.x,p.y+1.8,p.z),new THREE.Vector3(0,-1,0));downRay.far=12;const h=downRay.intersectObjects(grounds,false);if(h.length)p.y=h[0].point.y+EYE;else{logs.push("掉地板@x="+p.x.toFixed(1));break;}}return JSON.stringify({finalX:+p.x.toFixed(1),finalY:+p.y.toFixed(2),reachedExit:Math.abs(p.x-28.5)<2.2,logs});};
 const clock=new THREE.Clock();
 function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),0.05);
   if((phase==='quake'||phase==='wake')&&(keys['KeyW']||keys['KeyA']||keys['KeyS']||keys['KeyD'])){const sp=3.4*dt;const e=new THREE.Euler(0,yaw,0,'YXZ');const fwd=new THREE.Vector3(0,0,-1).applyEuler(e),rgt=new THREE.Vector3(1,0,0).applyEuler(e);
